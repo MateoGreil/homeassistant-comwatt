@@ -1,0 +1,13 @@
+{
+  "domain": "comwatt",
+  "name": "Comwatt",
+  "version": "0.0.1",
+  "documentation": "https://github.com/MateoGreil/homeassistant-comwatt/blob/main/README.md",
+  "issue_tracker": "https://github.com/MateoGreil/homeassistant-comwatt/issues",
+  "codeowners": ["@MateoGreil"],
+  "requirements": ["comwatt-client==0.1.6"],
+  "dependencies": [],
+  "iot_class": "cloud_polling",
+  "config_flow": true,
+  "codeowners": ["@MateoGreil"]
+}
