@@ -1,22 +1,24 @@
 # Comwatt Integration for Home Assistant
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg)](https://github.com/hacs/integration)
+⚠️ Note: This integration is currently under development and not fully functional. Stay tuned for updates, as we are actively working on bringing you a fully functional integration very soon!
 
-Control your Comwatt energy monitoring system via the Comwatt API with Home Assistant.
+<!-- [![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg)](https://github.com/hacs/integration) -->
 
-## Installation
-1. Install this integration using HACS by searching for "Comwatt" or manually copy the files to your Home Assistant installation.
-2. Restart Home Assistant to load the integration.
+<!-- Control your Comwatt energy monitoring system via the Comwatt API with Home Assistant. -->
 
-## Configuration
-After installation, search and add component Midea AC LAN in Home Assistant integrations page.
+<!-- ## Installation -->
+<!-- 1. Install this integration using HACS by searching for "Comwatt" or manually copy the files to your Home Assistant installation. -->
+<!-- 2. Restart Home Assistant to load the integration. -->
 
-Or click [![Configuration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start?domain=comwatt)
+<!-- ## Configuration -->
+<!-- After installation, search and add component Midea AC LAN in Home Assistant integrations page. -->
 
-## Usage
-Once the integration is set up and configured, you will have access to sensors and switches representing energy consumption, power consumption, and other data from your Comwatt devices. These entities can be added to your Home Assistant dashboard for monitoring and automation purposes.
+<!-- Or click [![Configuration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start?domain=comwatt) -->
 
-## Contributions
-Contributions and feedback are welcome! If you encounter any issues, have suggestions for improvement, or would like to contribute new features, please open an issue or submit a pull request on the GitHub repository.
+<!-- ## Usage -->
+<!-- Once the integration is set up and configured, you will have access to sensors and switches representing energy consumption, power consumption, and other data from your Comwatt devices. These entities can be added to your Home Assistant dashboard for monitoring and automation purposes. -->
 
-If you find this integration useful, consider supporting the development by adding a start !
+<!-- ## Contributions -->
+<!-- Contributions and feedback are welcome! If you encounter any issues, have suggestions for improvement, or would like to contribute new features, please open an issue or submit a pull request on the GitHub repository. -->
+
+<!-- If you find this integration useful, consider supporting the development by adding a start ! -->
