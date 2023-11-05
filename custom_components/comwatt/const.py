@@ -1,7 +1,3 @@
-"""
-Constants for Comwatt integration.
-"""
+"""Constants for the Comwatt integration."""
 
 DOMAIN = "comwatt"
-
-PLATFORMS = ["sensor"]

@@ -1,61 +1,100 @@
+"""Config flow for Comwatt integration."""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
 import voluptuous as vol
-from homeassistant import config_entries, core
+
+from homeassistant import config_entries
+from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResult
+from homeassistant.exceptions import HomeAssistantError
+
 from .const import DOMAIN
-from comwatt_client import ComwattClient
+
 import asyncio
+from comwatt_client import ComwattClient
 
-class ComwattConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+_LOGGER = logging.getLogger(__name__)
 
-    async def async_step_user(self, user_input=None):
+# TODO adjust the data schema to the data that you need
+STEP_USER_DATA_SCHEMA = vol.Schema(
+    {
+        vol.Required("username"): str,
+        vol.Required("password"): str,
+    }
+)
+
+
+async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+    """Validate the user input allows us to connect.
+
+    Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
+    """
+    # TODO validate the data can be used to set up a connection.
+
+    # If your PyPI package is not built with async, pass your methods
+    # to the executor:
+    # await hass.async_add_executor_job(
+    #     your_validate_func, data["username"], data["password"]
+    # )
+
+    client = ComwattClient()
+    cwt_session = None
+    try:
+        await asyncio.to_thread(lambda: client.authenticate(data["username"], data["password"]))
+
+        for cookie in client.session.cookies:
+            if cookie.name == "cwt_session":
+                cwt_session = cookie
+                break
+    except Exception:
+        raise CannotConnect
+
+    if not cwt_session:
+        raise InvalidAuth
+
+    # If you cannot connect:
+    # throw CannotConnect
+    # If the authentication is wrong:
+    # InvalidAuth
+
+    # Return info that you want to store in the config entry.
+    return {"title": data["username"]}
+
+
+class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Comwatt."""
+
+    VERSION = 1
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle the initial step."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            username = user_input["username"]
-            password = user_input["password"]
-
-            # Call the _authenticate method in a separate thread using asyncio.to_thread
-            # This allows blocking calls to be executed without blocking the event loop
-            # and ensures the stability of the application.
-            cwt_session = await asyncio.to_thread(lambda: self._authenticate(username, password))
-
-            if cwt_session is not None:
-                # Save the user_input and cookie in the entry configuration
-                return self.async_create_entry(title="Comwatt", data={"username": username, "password": password, "cwt_session": cwt_session.value})
+            try:
+                info = await validate_input(self.hass, user_input)
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
             else:
-                return self.async_show_form(
-                    step_id="user",
-                    data_schema=vol.Schema(
-                        {
-                            vol.Required("username"): str,
-                            vol.Required("password"): str,
-                        }
-                    ),
-                    errors={"base": "Authentication failed"},
-                )
+                return self.async_create_entry(title=info["title"], data=user_input)
 
-        # Show the user configuration form
         return self.async_show_form(
-            step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("username"): str,
-                    vol.Required("password"): str,
-                }
-            ),
+            step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
         )
 
-    def _authenticate(self, username, password):
-        # Perform authentication using the Comwatt client
-        # Return cwt_session if authentication succeeds, None otherwise
 
-        client = ComwattClient()
-        try:
-            client.authenticate(username, password)
+class CannotConnect(HomeAssistantError):
+    """Error to indicate we cannot connect."""
 
-            cwt_session = None
-            for cookie in client.session.cookies:
-                if cookie.name == 'cwt_session':
-                    cwt_session = cookie
-                    break
 
-            return cwt_session
-        except Exception:
-            return None
+class InvalidAuth(HomeAssistantError):
+    """Error to indicate there is invalid auth."""
