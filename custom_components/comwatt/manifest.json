@@ -1,13 +1,17 @@
 {
   "domain": "comwatt",
   "name": "Comwatt",
-  "version": "0.0.1",
-  "documentation": "https://github.com/MateoGreil/homeassistant-comwatt/blob/main/README.md",
-  "issue_tracker": "https://github.com/MateoGreil/homeassistant-comwatt/issues",
-  "codeowners": ["@MateoGreil"],
-  "requirements": ["comwatt-client==0.1.6"],
-  "dependencies": [],
-  "iot_class": "cloud_polling",
+  "codeowners": [
+    "@github.com:MateoGreil/homeassistant-comwatt.git"
+  ],
   "config_flow": true,
-  "codeowners": ["@MateoGreil"]
+  "dependencies": [],
+  "documentation": "https://www.home-assistant.io/integrations/comwatt",
+  "homekit": {},
+  "iot_class": "cloud_polling",
+  "requirements": [
+    "comwatt-client==0.1.6"
+  ],
+  "ssdp": [],
+  "zeroconf": []
 }
