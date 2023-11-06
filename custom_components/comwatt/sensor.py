@@ -23,7 +23,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
         devices = await asyncio.to_thread(lambda: client.get_devices(site['id']))
         for device in devices:
             if 'id' in device:
-                new_devices.append(ComwattSensor(client, device))
+                if 'partChilds' in device and len(device['partChilds']) > 0:
+                    childs = device["partChilds"]
+                    for child in childs:
+                        new_devices.append(ComwattSensor(client, child))
+                else:
+                    new_devices.append(ComwattSensor(client, device))
     # TODO: Remove existing devices
     if new_devices:
         async_add_entities(new_devices)
@@ -47,11 +52,12 @@ class ComwattSensor(SensorEntity):
 
         This is the only method that should fetch new data for Home Assistant.
         """
-        time_series_data = self._client.get_device_ts_time_ago(self._device["id"])
+        time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
+
 
         # TODO: Fix the state and native_value
-        self._attr_native_value = time_series_data["values"][-1]
-        self._state = time_series_data["values"][-1]
-        return self
+        # TODO: Update to the time of comwatt and not the current time
+        self._attr_native_value = time_series_data["values"][0]
+        self._state = time_series_data["values"][0]
 
 
