@@ -1,6 +1,7 @@
 {
   "domain": "comwatt",
   "name": "Comwatt",
+  "version": "0.0.2",
   "codeowners": [
     "@github.com:MateoGreil/homeassistant-comwatt.git"
   ],
