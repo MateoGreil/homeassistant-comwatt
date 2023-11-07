@@ -1,7 +1,7 @@
 {
   "domain": "comwatt",
   "name": "Comwatt",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "issue_tracker": "https://github.com/MateoGreil/homeassistant-comwatt/issues",
   "codeowners": [
     "@github.com:MateoGreil/homeassistant-comwatt.git"
