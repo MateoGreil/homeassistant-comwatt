@@ -62,6 +62,7 @@ class ComwattEnergySensor(SensorEntity):
         This is the only method that should fetch new data for Home Assistant.
         """
 
+        # TODO: Better handling the API disconnection (do not create a client for each sensor)
         try:
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
         except Exception:
@@ -95,6 +96,7 @@ class ComwattPowerSensor(SensorEntity):
         This is the only method that should fetch new data for Home Assistant.
         """
 
+        # TODO: Better handling the API disconnection (do not create a client for each sensor)
         try:
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
         except Exception:
