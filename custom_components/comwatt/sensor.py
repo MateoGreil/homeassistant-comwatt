@@ -6,7 +6,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -38,17 +38,17 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class ComwattSensor(SensorEntity):
     """Representation of a Sensor."""
 
-    _attr_native_unit_of_measurement = UnitOfEnergy.WATT_HOUR
-    _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, client, username, password, device):
         self._device = device
         self._client = client
         self._username = username
         self._password = password
-        self._attr_unique_id = f"{self._device['id']}_energy"
-        self._attr_name = f"{self._device['name']} Energy"
+        self._attr_unique_id = f"{self._device['id']}_power"
+        self._attr_name = f"{self._device['name']} Power"
 
     def update(self) -> None:
         """Fetch new state data for the sensor.
