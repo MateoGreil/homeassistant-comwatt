@@ -52,8 +52,8 @@ class ComwattEnergySensor(SensorEntity):
         self._client = client
         self._username = username
         self._password = password
-        self._attr_unique_id = f"{self._device['id']}_energy"
-        self._attr_name = f"{self._device['name']} Energy"
+        self._attr_unique_id = f"{self._device['id']}_daily_energy"
+        self._attr_name = f"{self._device['name']} Daily Energy"
 
     # TODO: Update it ~ only 1 per hour
     def update(self) -> None:
