@@ -10,24 +10,15 @@ from .const import DOMAIN
 import asyncio
 from comwatt_client import ComwattClient
 
-
-# TODO List the platforms that you want to support.
-# For your initial PR, limit it to 1 platform.
 PLATFORMS: list[Platform] = [Platform.SENSOR]
-
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Comwatt from a config entry."""
 
     hass.data.setdefault(DOMAIN, {})
 
-    # TODO 1. Create API instance
     client = ComwattClient()
     await asyncio.to_thread(lambda: client.authenticate(entry.data["username"], entry.data["password"]))
-
-    # TODO 2. Validate the API connection (and authentication)
-
-    # TODO 3. Store an API object for your platforms to access
     hass.data[DOMAIN][entry.entry_id] = client
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
