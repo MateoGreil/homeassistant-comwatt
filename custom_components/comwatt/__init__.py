@@ -15,8 +15,10 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Comwatt from a config entry."""
 
+    # Set default DOMAIN
     hass.data.setdefault(DOMAIN, {})
 
+    # Init client
     client = ComwattClient()
     await asyncio.to_thread(lambda: client.authenticate(entry.data["username"], entry.data["password"]))
     hass.data[DOMAIN][entry.entry_id] = client
