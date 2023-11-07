@@ -6,7 +6,10 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfPower
+from homeassistant.const import (
+    UnitOfPower,
+    UnitOfEnergy
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -28,13 +31,48 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     childs = device["partChilds"]
                     for child in childs:
                         new_devices.append(ComwattPowerSensor(client, entry.data["username"], entry.data["password"], child))
+                        new_devices.append(ComwattEnergySensor(client, entry.data["username"], entry.data["password"], child))
                 else:
                     new_devices.append(ComwattPowerSensor(client, entry.data["username"], entry.data["password"], device))
+                    new_devices.append(ComwattEnergySensor(client, entry.data["username"], entry.data["password"], device))
     # TODO: Remove existing devices?
     # TODO: Remove old existing devices?
     if new_devices:
         async_add_entities(new_devices)
 
+class ComwattEnergySensor(SensorEntity):
+    """Representation of a Sensor."""
+
+    _attr_native_unit_of_measurement = UnitOfEnergy.WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(self, client, username, password, device):
+        self._device = device
+        self._client = client
+        self._username = username
+        self._password = password
+        self._attr_unique_id = f"{self._device['id']}_energy"
+        self._attr_name = f"{self._device['name']} Energy"
+
+    # TODO: Update it ~ only 1 per hour
+    def update(self) -> None:
+        """Fetch new state data for the sensor.
+
+        This is the only method that should fetch new data for Home Assistant.
+        """
+
+        try:
+            time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
+        except Exception:
+            self._client = ComwattClient()
+            self._client.authenticate(self._username, self._password)
+            time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
+
+        # TODO: Fix the state and native_value
+        # TODO: Update to the time of comwatt and not the current time
+        self._attr_native_value = time_series_data["values"][0]
+        self._state = time_series_data["values"][0]
 
 class ComwattPowerSensor(SensorEntity):
     """Representation of a Sensor."""
@@ -57,7 +95,6 @@ class ComwattPowerSensor(SensorEntity):
         This is the only method that should fetch new data for Home Assistant.
         """
 
-        #TODO: Improve this handle of the deconnection of the API
         try:
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
         except Exception:
