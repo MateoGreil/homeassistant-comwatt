@@ -27,15 +27,16 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 if 'partChilds' in device and len(device['partChilds']) > 0:
                     childs = device["partChilds"]
                     for child in childs:
-                        new_devices.append(ComwattSensor(client, entry.data["username"], entry.data["password"], child))
+                        new_devices.append(ComwattPowerSensor(client, entry.data["username"], entry.data["password"], child))
                 else:
-                    new_devices.append(ComwattSensor(client, entry.data["username"], entry.data["password"], device))
-    # TODO: Remove existing devices
+                    new_devices.append(ComwattPowerSensor(client, entry.data["username"], entry.data["password"], device))
+    # TODO: Remove existing devices?
+    # TODO: Remove old existing devices?
     if new_devices:
         async_add_entities(new_devices)
 
 
-class ComwattSensor(SensorEntity):
+class ComwattPowerSensor(SensorEntity):
     """Representation of a Sensor."""
 
     _attr_native_unit_of_measurement = UnitOfPower.WATT
