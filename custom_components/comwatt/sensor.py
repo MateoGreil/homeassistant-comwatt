@@ -14,6 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
+from datetime import date
 import asyncio
 from .const import DOMAIN
 from comwatt_client import ComwattClient
@@ -70,7 +71,7 @@ class ComwattEnergySensor(SensorEntity):
             self._client.authenticate(self._username, self._password)
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
 
-        today = time_series_data["timestamps"][0][:10]
+        today = date.today().strftime("%Y-%m-%d")
         timestamps = time_series_data["timestamps"]
         values = time_series_data["values"]
 
