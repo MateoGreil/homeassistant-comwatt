@@ -80,10 +80,8 @@ class ComwattEnergySensor(SensorEntity):
         today_datas = [data for data in datas if data["timestamp"][:10] == today]
 
         value = sum(data["value"] for data in today_datas)
-        # TODO: Fix the state and native_value
         # TODO: Update to the time of comwatt and not the current time
         self._attr_native_value = value
-        self._state = value
 
 class ComwattPowerSensor(SensorEntity):
     """Representation of a Sensor."""
@@ -114,7 +112,5 @@ class ComwattPowerSensor(SensorEntity):
             self._client.authenticate(self._username, self._password)
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
 
-        # TODO: Fix the state and native_value
         # TODO: Update to the time of comwatt and not the current time
         self._attr_native_value = time_series_data["values"][0]
-        self._state = time_series_data["values"][0]
