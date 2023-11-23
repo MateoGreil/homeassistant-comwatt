@@ -77,8 +77,7 @@ class ComwattEnergySensor(SensorEntity):
 
         datas = [{"timestamp": timestamp, "value": value} for timestamp, value in zip(timestamps, values)]
 
-        # TODO: Update to the time of comwatt and not the current time
-        today_datas = [data for data in datas if data["timestamp"][:10] == today].pop()
+        today_datas = [data for data in datas if data["timestamp"][:10] == today]
 
         value = sum(data["value"] for data in today_datas)
         # TODO: Update to the time of comwatt and not the current time
