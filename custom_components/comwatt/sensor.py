@@ -52,8 +52,8 @@ class ComwattEnergySensor(SensorEntity):
         self._client = client
         self._username = username
         self._password = password
-        self._attr_unique_id = f"{self._device['id']}_daily_energy"
-        self._attr_name = f"{self._device['name']} Daily Energy"
+        self._attr_unique_id = f"{self._device['id']}_total_energy"
+        self._attr_name = f"{self._device['name']} Total Energy"
 
     # TODO: Update it ~ only 1 per hour
     def update(self) -> None:
@@ -70,17 +70,15 @@ class ComwattEnergySensor(SensorEntity):
             self._client.authenticate(self._username, self._password)
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
 
-        today = time_series_data["timestamps"][0][:10]
-        timestamps = time_series_data["timestamps"]
-        values = time_series_data["values"]
+        try:
+            self._last_native_value_at
+        except NameError:
+            self._last_native_value_at = 0
 
-        datas = [{"timestamp": timestamp, "value": value} for timestamp, value in zip(timestamps, values)]
-
-        today_datas = [data for data in datas if data["timestamp"][:10] == today]
-
-        value = sum(data["value"] for data in today_datas)
         # TODO: Update to the time of comwatt and not the current time
-        self._attr_native_value = value
+        if self._last_native_value_at != time_series_data["timestamps"][0]:
+            self._last_native_value_at = time_series_data["timestamps"][0]
+            self._attr_native_value += time_series_data["values"][0]
 
 class ComwattPowerSensor(SensorEntity):
     """Representation of a Sensor."""
