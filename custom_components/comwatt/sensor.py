@@ -70,10 +70,9 @@ class ComwattEnergySensor(SensorEntity):
             self._client.authenticate(self._username, self._password)
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
 
-        try:
-            self._last_native_value_at
-        except NameError:
+        if self._attr_native_value == None:
             self._last_native_value_at = 0
+            self._attr_native_value = 0
 
         # TODO: Update to the time of comwatt and not the current time
         if self._last_native_value_at != time_series_data["timestamps"][0]:
