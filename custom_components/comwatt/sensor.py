@@ -45,7 +45,7 @@ class ComwattEnergySensor(SensorEntity):
 
     _attr_native_unit_of_measurement = UnitOfEnergy.WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
     def __init__(self, client, username, password, device):
         self._device = device
