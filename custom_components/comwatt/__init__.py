@@ -19,7 +19,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
     # Init client
-    client = ComwattClient()
+    client = ComwattClient(entry.data["api"])
     await asyncio.to_thread(lambda: client.authenticate(entry.data["username"], entry.data["password"]))
     hass.data[DOMAIN][entry.entry_id] = client
 

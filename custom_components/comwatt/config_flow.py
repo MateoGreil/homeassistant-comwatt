@@ -23,6 +23,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required("username"): str,
         vol.Required("password"): str,
+        vol.Optional("api", default="energy"): vol.In(["energy", "go"]),
     }
 )
 
@@ -40,7 +41,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     #     your_validate_func, data["username"], data["password"]
     # )
 
-    client = ComwattClient()
+    client = ComwattClient(data["api"])
     cwt_session = None
     try:
         await asyncio.to_thread(lambda: client.authenticate(data["username"], data["password"]))
@@ -61,7 +62,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     # InvalidAuth
 
     # Return info that you want to store in the config entry.
-    return {"title": data["username"]}
+    return {"title": data["username"], "api": data["api"]}
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):

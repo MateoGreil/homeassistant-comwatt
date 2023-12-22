@@ -30,11 +30,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 if 'partChilds' in device and len(device['partChilds']) > 0:
                     childs = device["partChilds"]
                     for child in childs:
-                        new_devices.append(ComwattPowerSensor(client, entry.data["username"], entry.data["password"], child))
-                        new_devices.append(ComwattEnergySensor(client, entry.data["username"], entry.data["password"], child))
+                        new_devices.append(ComwattPowerSensor(client, entry.data["username"], entry.data["password"], entry.data["api"], child))
+                        new_devices.append(ComwattEnergySensor(client, entry.data["username"], entry.data["password"], entry.data["api"], child))
                 else:
-                    new_devices.append(ComwattPowerSensor(client, entry.data["username"], entry.data["password"], device))
-                    new_devices.append(ComwattEnergySensor(client, entry.data["username"], entry.data["password"], device))
+                    new_devices.append(ComwattPowerSensor(client, entry.data["username"], entry.data["password"], entry.data["api"], device))
+                    new_devices.append(ComwattEnergySensor(client, entry.data["username"], entry.data["password"], entry.data["api"], device))
     # TODO: Remove existing devices?
     # TODO: Remove old existing devices?
     if new_devices:
@@ -47,11 +47,12 @@ class ComwattEnergySensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, client, username, password, device):
+    def __init__(self, client, username, password, api, device):
         self._device = device
         self._client = client
         self._username = username
         self._password = password
+        self._api = api
         self._attr_unique_id = f"{self._device['id']}_total_energy"
         self._attr_name = f"{self._device['name']} Total Energy"
 
@@ -66,7 +67,7 @@ class ComwattEnergySensor(SensorEntity):
         try:
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
         except Exception:
-            self._client = ComwattClient()
+            self._client = ComwattClient(self._api)
             self._client.authenticate(self._username, self._password)
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
 
@@ -86,11 +87,12 @@ class ComwattPowerSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, client, username, password, device):
+    def __init__(self, client, username, password, api, device):
         self._device = device
         self._client = client
         self._username = username
         self._password = password
+        self._api = api
         self._attr_unique_id = f"{self._device['id']}_power"
         self._attr_name = f"{self._device['name']} Power"
 
@@ -104,7 +106,7 @@ class ComwattPowerSensor(SensorEntity):
         try:
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
         except Exception:
-            self._client = ComwattClient()
+            self._client = ComwattClient(self._api)
             self._client.authenticate(self._username, self._password)
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
 
