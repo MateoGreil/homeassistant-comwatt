@@ -12,7 +12,7 @@
   "homekit": {},
   "iot_class": "cloud_polling",
   "requirements": [
-    "comwatt-client==0.1.6"
+    "comwatt-client==0.1.7"
   ],
   "ssdp": [],
   "zeroconf": []
