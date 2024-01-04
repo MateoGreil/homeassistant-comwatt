@@ -1,8 +1,13 @@
+[![GitHub Release][releases-shield]][releases]
+[![GitHub Activity][commits-shield]][commits]
+[![License][license-shield]](LICENSE)
+[![hacs][hacs_badge]][hacs]
+[![BuyMeCoffee][buymecoffeebadge]][buymecoffee]
+
 # Comwatt Integration for Home Assistant
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg)](https://github.com/hacs/integration)
-
 Control your Comwatt energy monitoring system via the Comwatt API with Home Assistant.
+**Currently, this integration work only for comwatt g4.**
 
 ## Installation
 1. Install this integration using HACS by adding this repository or manually copy the files to your Home Assistant installation.
@@ -29,3 +34,17 @@ This integration can handle :
 Contributions and feedback are welcome! If you encounter any issues, have suggestions for improvement, or would like to contribute new features, please open an issue or submit a pull request on the GitHub repository.
 
 If you find this integration useful, consider supporting the development by adding a star !
+
+[homeassistant-comwatt]: https://github.com/mateogreil/homeassistant-comwatt
+[buymecoffee]: https://www.buymeacoffee.com/matdn
+[buymecoffeebadge]: https://img.shields.io/badge/Buy%20me%20a%20beer-%245-orange?style=for-the-badge&logo=buy-me-a-beer
+[commits-shield]: https://img.shields.io/github/commit-activity/y/mateogreil/homeassistant-comwatt.svg?style=for-the-badge
+[commits]: https://github.com/mateogreil/homeassistant-comwatt/commits/master
+[hacs]: https://github.com/custom-components/hacs
+[hacs_badge]: https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=for-the-badge
+[forum-shield]: https://img.shields.io/badge/community-forum-brightgreen.svg?style=for-the-badge
+[forum]: https://forum.hacf.fr/
+[license-shield]: https://img.shields.io/github/license/mateogreil/homeassistant-comwatt.svg?style=for-the-badge
+[maintenance-shield]: https://img.shields.io/badge/maintainer-Mateo%20Greil%20%40mateogreil-blue.svg?style=for-the-badge
+[releases-shield]: https://img.shields.io/github/release/mateogreil/homeassistant-comwatt.svg?style=for-the-badge
+[releases]: https://github.com/mateogreil/homeassistant-comwatt/releases
