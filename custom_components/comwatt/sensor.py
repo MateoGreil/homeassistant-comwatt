@@ -122,4 +122,5 @@ class ComwattPowerSensor(ComwattSensor):
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
 
         # TODO: Update to the time of comwatt and not the current time
-        self._attr_native_value = time_series_data["values"][0]
+        if time_series_data["values"]:
+            self._attr_native_value = time_series_data["values"][0]
