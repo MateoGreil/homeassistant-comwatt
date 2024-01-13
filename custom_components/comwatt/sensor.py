@@ -94,7 +94,7 @@ class ComwattEnergySensor(ComwattSensor):
             self._attr_native_value = 0
 
         # TODO: Update to the time of comwatt and not the current time
-        if self._last_native_value_at != time_series_data["timestamps"][0]:
+        if time_series_data["timestamps"] and self._last_native_value_at != time_series_data["timestamps"][0]:
             self._last_native_value_at = time_series_data["timestamps"][0]
             self._attr_native_value += time_series_data["values"][0]
 
