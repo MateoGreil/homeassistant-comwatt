@@ -45,12 +45,18 @@ class ComwattSensor(SensorEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return te devce info."""
+        if 'deviceKind' in self._device and 'code' in self._device['deviceKind']:
+            model = self._device['deviceKind']['code']
+        else:
+            model = None
+
         return DeviceInfo(
             identifiers={
                 ("comwatt", self._device['name'])
             },
+            manufacturer='Comwatt',
             name=self._device['name'],
-            manufacturer='Comwatt'
+            model=model
         )
 
 class ComwattEnergySensor(ComwattSensor):
