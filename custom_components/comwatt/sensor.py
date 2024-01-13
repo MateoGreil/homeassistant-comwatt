@@ -13,6 +13,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.device_registry import DeviceInfo
 
 import asyncio
 from .const import DOMAIN
@@ -40,7 +41,19 @@ async def async_setup_entry(hass, entry, async_add_entities):
     if new_devices:
         async_add_entities(new_devices)
 
-class ComwattEnergySensor(SensorEntity):
+class ComwattSensor(SensorEntity):
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return te devce info."""
+        return DeviceInfo(
+            identifiers={
+                ("comwatt", self._device['name'])
+            },
+            name=self._device['name'],
+            manufacturer='Comwatt'
+        )
+
+class ComwattEnergySensor(ComwattSensor):
     """Representation of a Sensor."""
 
     _attr_native_unit_of_measurement = UnitOfEnergy.WATT_HOUR
@@ -79,7 +92,7 @@ class ComwattEnergySensor(SensorEntity):
             self._last_native_value_at = time_series_data["timestamps"][0]
             self._attr_native_value += time_series_data["values"][0]
 
-class ComwattPowerSensor(SensorEntity):
+class ComwattPowerSensor(ComwattSensor):
     """Representation of a Sensor."""
 
     _attr_native_unit_of_measurement = UnitOfPower.WATT
