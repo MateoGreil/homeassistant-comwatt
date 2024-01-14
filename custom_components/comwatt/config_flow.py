@@ -14,7 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import DOMAIN
 
 import asyncio
-from comwatt_client import ComwattClient
+from .client import Client
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     #     your_validate_func, data["username"], data["password"]
     # )
 
-    client = ComwattClient()
+    client = Client()
     cwt_session = None
     try:
         await asyncio.to_thread(lambda: client.authenticate(data["username"], data["password"]))

@@ -17,7 +17,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 
 import asyncio
 from .const import DOMAIN
-from comwatt_client import ComwattClient
+from .client import Client
 
 async def async_setup_entry(hass, entry, async_add_entities):
     client = hass.data[DOMAIN][entry.entry_id]
@@ -85,7 +85,7 @@ class ComwattEnergySensor(ComwattSensor):
         try:
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
         except Exception:
-            self._client = ComwattClient()
+            self._client = Client()
             self._client.authenticate(self._username, self._password)
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
 
@@ -123,7 +123,7 @@ class ComwattPowerSensor(ComwattSensor):
         try:
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
         except Exception:
-            self._client = ComwattClient()
+            self._client = Client()
             self._client.authenticate(self._username, self._password)
             time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
 
