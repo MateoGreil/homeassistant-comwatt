@@ -6,9 +6,9 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
+from .client import comwatt_client
 
 import asyncio
-from comwatt_client import ComwattClient
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
@@ -18,10 +18,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Set default DOMAIN
     hass.data.setdefault(DOMAIN, {})
 
-    # Init client
-    client = ComwattClient()
-    await asyncio.to_thread(lambda: client.authenticate(entry.data["username"], entry.data["password"]))
-    hass.data[DOMAIN][entry.entry_id] = client
+    await asyncio.to_thread(lambda: comwatt_client.authenticate(entry.data["username"], entry.data["password"]))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
