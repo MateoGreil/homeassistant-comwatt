@@ -17,25 +17,23 @@ from homeassistant.helpers.device_registry import DeviceInfo
 
 import asyncio
 from .const import DOMAIN
-from comwatt_client import ComwattClient
+from .client import comwatt_client
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    client = hass.data[DOMAIN][entry.entry_id]
-
     new_devices = []
-    sites = await asyncio.to_thread(lambda: client.get_sites())
+    sites = await asyncio.to_thread(lambda: comwatt_client.get_sites())
     for site in sites:
-        devices = await asyncio.to_thread(lambda: client.get_devices(site['id']))
+        devices = await asyncio.to_thread(lambda: comwatt_client.get_devices(site['id']))
         for device in devices:
             if 'id' in device:
                 if 'partChilds' in device and len(device['partChilds']) > 0:
                     childs = device["partChilds"]
                     for child in childs:
-                        new_devices.append(ComwattPowerSensor(client, entry.data["username"], entry.data["password"], child))
-                        new_devices.append(ComwattEnergySensor(client, entry.data["username"], entry.data["password"], child))
+                        new_devices.append(ComwattPowerSensor(hass, entry, child))
+                        new_devices.append(ComwattEnergySensor(hass, entry, child))
                 else:
-                    new_devices.append(ComwattPowerSensor(client, entry.data["username"], entry.data["password"], device))
-                    new_devices.append(ComwattEnergySensor(client, entry.data["username"], entry.data["password"], device))
+                    new_devices.append(ComwattPowerSensor(hass, entry, device))
+                    new_devices.append(ComwattEnergySensor(hass, entry, device))
     # TODO: Remove existing devices?
     # TODO: Remove old existing devices?
     if new_devices:
@@ -66,11 +64,11 @@ class ComwattEnergySensor(ComwattSensor):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, client, username, password, device):
+    def __init__(self, hass, entry, device):
+        self.hass = hass
         self._device = device
-        self._client = client
-        self._username = username
-        self._password = password
+        self._username = entry.data["username"]
+        self._password = entry.data["password"]
         self._attr_unique_id = f"{self._device['id']}_total_energy"
         self._attr_name = f"{self._device['name']} Total Energy"
 
@@ -81,13 +79,11 @@ class ComwattEnergySensor(ComwattSensor):
         This is the only method that should fetch new data for Home Assistant.
         """
 
-        # TODO: Better handling the API disconnection (do not create a client for each sensor)
         try:
-            time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
+            time_series_data = self.hass.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
         except Exception:
-            self._client = ComwattClient()
-            self._client.authenticate(self._username, self._password)
-            time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
+            comwatt_client.authenticate(self._username, self._password)
+            time_series_data = comwatt_client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
 
         if self._attr_native_value == None:
             self._last_native_value_at = 0
@@ -105,9 +101,8 @@ class ComwattPowerSensor(ComwattSensor):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, client, username, password, device):
+    def __init__(self, username, password, device):
         self._device = device
-        self._client = client
         self._username = username
         self._password = password
         self._attr_unique_id = f"{self._device['id']}_power"
@@ -119,13 +114,11 @@ class ComwattPowerSensor(ComwattSensor):
         This is the only method that should fetch new data for Home Assistant.
         """
 
-        # TODO: Better handling the API disconnection (do not create a client for each sensor)
         try:
-            time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
+            time_series_data = comwatt_client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
         except Exception:
-            self._client = ComwattClient()
-            self._client.authenticate(self._username, self._password)
-            time_series_data = self._client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
+            comwatt_client.authenticate(self._username, self._password)
+            time_series_data = comwatt_client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
 
         # TODO: Update to the time of comwatt and not the current time
         if time_series_data["values"]:

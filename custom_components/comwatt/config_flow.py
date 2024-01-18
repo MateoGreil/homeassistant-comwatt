@@ -14,7 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import DOMAIN
 
 import asyncio
-from comwatt_client import ComwattClient
+from .client import comwatt_client
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,20 +32,12 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
     """
-    # TODO validate the data can be used to set up a connection.
 
-    # If your PyPI package is not built with async, pass your methods
-    # to the executor:
-    # await hass.async_add_executor_job(
-    #     your_validate_func, data["username"], data["password"]
-    # )
-
-    client = ComwattClient()
     cwt_session = None
     try:
-        await asyncio.to_thread(lambda: client.authenticate(data["username"], data["password"]))
+        await asyncio.to_thread(lambda: comwatt_client.authenticate(data["username"], data["password"]))
 
-        for cookie in client.session.cookies:
+        for cookie in comwatt_client.session.cookies:
             if cookie.name == "cwt_session":
                 cwt_session = cookie
                 break
@@ -55,12 +47,6 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     if not cwt_session:
         raise InvalidAuth
 
-    # If you cannot connect:
-    # throw CannotConnect
-    # If the authentication is wrong:
-    # InvalidAuth
-
-    # Return info that you want to store in the config entry.
     return {"title": data["username"]}
 
 
