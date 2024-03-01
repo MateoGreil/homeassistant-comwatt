@@ -29,8 +29,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 if 'partChilds' in device and len(device['partChilds']) > 0:
                     childs = device["partChilds"]
                     for child in childs:
-                        new_devices.append(ComwattPowerSensor(hass, entry, child))
-                        new_devices.append(ComwattEnergySensor(hass, entry, child))
+                        if 'id' in child:
+                            new_devices.append(ComwattPowerSensor(hass, entry, child))
+                            new_devices.append(ComwattEnergySensor(hass, entry, child))
                 else:
                     new_devices.append(ComwattPowerSensor(hass, entry, device))
                     new_devices.append(ComwattEnergySensor(hass, entry, device))
