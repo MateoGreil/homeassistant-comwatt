@@ -4,11 +4,11 @@
   "version": "0.1.5.2",
   "issue_tracker": "https://github.com/MateoGreil/homeassistant-comwatt/issues",
   "codeowners": [
-    "@github.com:MateoGreil/homeassistant-comwatt.git"
+    "@MateoGreil"
   ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://www.home-assistant.io/integrations/comwatt",
+  "documentation": "https://github.com/MateoGreil/homeassistant-comwatt/blob/main/README.md",
   "homekit": {},
   "iot_class": "cloud_polling",
   "requirements": [
