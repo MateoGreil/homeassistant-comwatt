@@ -4,11 +4,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 import asyncio
 from .client import comwatt_client
 
-import logging
-_LOGGER = logging.getLogger(__name__)
-
 async def async_setup_entry(hass, entry, async_add_entities):
-    _LOGGER.info("SUPER ON EST DANS SWITCH.PY")
     new_devices = []
     sites = await asyncio.to_thread(lambda: comwatt_client.get_sites())
     for site in sites:
@@ -20,11 +16,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     for child in childs:
                         if 'id' in child:
                             if 'features' in child and any('capacities' in feature and any(capacity['capacity'].get('nature') == 'POWER_SWITCH' for capacity in feature['capacities']) for feature in child['features']):
-                                _LOGGER.info(child)
                                 new_devices.append(ComwattSwitch(entry, child))
                 else:
                     if 'features' in device and any('capacities' in feature and any(capacity['capacity'].get('nature') == 'POWER_SWITCH' for capacity in feature['capacities']) for feature in device['features']):
-                        _LOGGER.info(device, device)
                         new_devices.append(ComwattSwitch(entry, device))
 
     # TODO: Remove existing devices?

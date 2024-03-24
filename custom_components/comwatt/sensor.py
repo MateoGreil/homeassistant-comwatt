@@ -19,9 +19,6 @@ import asyncio
 from .const import DOMAIN
 from .client import comwatt_client
 
-import logging
-_LOGGER = logging.getLogger(__name__)
-
 async def async_setup_entry(hass, entry, async_add_entities):
     new_devices = []
     sites = await asyncio.to_thread(lambda: comwatt_client.get_sites())
