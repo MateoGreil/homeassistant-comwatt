@@ -58,8 +58,8 @@ class ComwattSwitch(SwitchEntity):
         self._device = device
         self._username = entry.data["username"]
         self._password = entry.data["password"]
-        self._attr_unique_id = f"{self._device['id']}_super_switch"
-        self._attr_name = f"{self._device['name']} Super Switch"
+        self._attr_unique_id = f"{self._device['id']}_switch"
+        self._attr_name = f"{self._device['name']} Switch"
         self._is_on = False
 
     @property
