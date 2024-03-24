@@ -30,11 +30,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     childs = device["partChilds"]
                     for child in childs:
                         if 'id' in child:
-                            new_devices.append(ComwattPowerSensor(hass, entry, child))
-                            new_devices.append(ComwattEnergySensor(hass, entry, child))
+                            new_devices.append(ComwattPowerSensor(entry, child))
+                            new_devices.append(ComwattEnergySensor(entry, child))
                 else:
-                    new_devices.append(ComwattPowerSensor(hass, entry, device))
-                    new_devices.append(ComwattEnergySensor(hass, entry, device))
+                    new_devices.append(ComwattPowerSensor(entry, device))
+                    new_devices.append(ComwattEnergySensor(entry, device))
     # TODO: Remove existing devices?
     # TODO: Remove old existing devices?
     if new_devices:
@@ -65,8 +65,7 @@ class ComwattEnergySensor(ComwattSensor):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, hass, entry, device):
-        self.hass = hass
+    def __init__(self, entry, device):
         self._device = device
         self._username = entry.data["username"]
         self._password = entry.data["password"]
@@ -81,7 +80,7 @@ class ComwattEnergySensor(ComwattSensor):
         """
 
         try:
-            time_series_data = self.hass.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
+            time_series_data = comwatt_client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
         except Exception:
             comwatt_client.authenticate(self._username, self._password)
             time_series_data = comwatt_client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
@@ -102,10 +101,10 @@ class ComwattPowerSensor(ComwattSensor):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, username, password, device):
+    def __init__(self, entry, device):
         self._device = device
-        self._username = username
-        self._password = password
+        self._username = entry.data["username"]
+        self._password = entry.data["password"]
         self._attr_unique_id = f"{self._device['id']}_power"
         self._attr_name = f"{self._device['name']} Power"
 
