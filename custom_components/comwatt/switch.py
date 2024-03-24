@@ -52,9 +52,9 @@ class ComwattSwitch(SwitchEntity):
         self._device = device
         self._username = entry.data["username"]
         self._password = entry.data["password"]
+        self._ref = self._device['id']
         self._attr_unique_id = f"{self._device['id']}_switch"
         self._attr_name = f"{self._device['name']} Switch"
-        self._is_on = False
 
     @property
     def is_on(self):
@@ -62,10 +62,59 @@ class ComwattSwitch(SwitchEntity):
 
     def turn_on(self, **kwargs) -> None:
         """Turn the entity on."""
-        self._is_on = True
+        try:
+            device = comwatt_client.get_device(self._ref)
+            for feature in device['features']:
+                for capacity in feature['capacities']:
+                    if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                        feature['enabled'] = True
+            comwatt_client.put_device(self._ref, device)
+
+        except Exception:
+            comwatt_client.authenticate(self._username, self._password)
+            device = comwatt_client.get_device(self._ref)
+            for feature in device['features']:
+                for capacity in feature['capacities']:
+                    if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                        feature['enabled'] = True
+            comwatt_client.put_device(self._ref, device)
+
         self.schedule_update_ha_state()
 
     def turn_off(self, **kwargs) -> None:
         """Turn the entity off."""
-        self._is_on = False
+        try:
+            device = comwatt_client.get_device(self._ref)
+            for feature in device['features']:
+                for capacity in feature['capacities']:
+                    if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                        feature['enabled'] = False
+            comwatt_client.put_device(self._ref, device)
+
+        except Exception:
+            comwatt_client.authenticate(self._username, self._password)
+            device = comwatt_client.get_device(self._ref)
+            for feature in device['features']:
+                for capacity in feature['capacities']:
+                    if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                        feature['enabled'] = False
+            comwatt_client.put_device(self._ref, device)
+
         self.schedule_update_ha_state()
+
+    def update(self) -> None:
+        """Fetch new state data for the sensor."""
+        try:
+            device = comwatt_client.get_device(self._ref)
+            for feature in device['features']:
+                for capacity in feature['capacities']:
+                    if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                        self._is_on = feature['enabled']
+
+        except Exception:
+            comwatt_client.authenticate(self._username, self._password)
+            device = comwatt_client.get_device(self._ref)
+            for feature in device['features']:
+                for capacity in feature['capacities']:
+                    if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                        self._is_on = feature['enabled']
