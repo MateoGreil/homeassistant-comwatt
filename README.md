@@ -36,7 +36,7 @@ Contributions and feedback are welcome! If you encounter any issues, have sugges
 If you find this integration useful, consider supporting the development by adding a star !
 
 [homeassistant-comwatt]: https://github.com/mateogreil/homeassistant-comwatt
-[buymecoffee]: https://www.buymeacoffee.com/matdn
+[buymecoffee]: https://dons.restosducoeur.org/particulier/~mon-don?don=5
 [buymecoffeebadge]: https://img.shields.io/badge/Buy%20me%20a%20beer-%245-orange?style=for-the-badge&logo=buy-me-a-beer
 [commits-shield]: https://img.shields.io/github/commit-activity/y/mateogreil/homeassistant-comwatt.svg?style=for-the-badge
 [commits]: https://github.com/mateogreil/homeassistant-comwatt/commits/master
