@@ -35,6 +35,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 else:
                     new_devices.append(ComwattPowerSensor(entry, device))
                     new_devices.append(ComwattEnergySensor(entry, device))
+
     # TODO: Remove existing devices?
     # TODO: Remove old existing devices?
     if new_devices:
@@ -74,10 +75,7 @@ class ComwattEnergySensor(ComwattSensor):
 
     # TODO: Update it ~ only 1 per hour
     def update(self) -> None:
-        """Fetch new state data for the sensor.
-
-        This is the only method that should fetch new data for Home Assistant.
-        """
+        """Fetch new state data for the sensor."""
 
         try:
             time_series_data = comwatt_client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
@@ -109,10 +107,7 @@ class ComwattPowerSensor(ComwattSensor):
         self._attr_name = f"{self._device['name']} Power"
 
     def update(self) -> None:
-        """Fetch new state data for the sensor.
-
-        This is the only method that should fetch new data for Home Assistant.
-        """
+        """Fetch new state data for the sensor."""
 
         try:
             time_series_data = comwatt_client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
