@@ -55,6 +55,10 @@ class ComwattSwitch(SwitchEntity):
         self._ref = self._device['id']
         self._attr_unique_id = f"{self._device['id']}_switch"
         self._attr_name = f"{self._device['name']} Switch"
+        for feature in device['features']:
+            for capacity in feature['capacities']:
+                if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                    self._is_on = capacity['capacity']['enable']
 
     @property
     def is_on(self):
@@ -67,8 +71,8 @@ class ComwattSwitch(SwitchEntity):
             for feature in device['features']:
                 for capacity in feature['capacities']:
                     if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
-                        feature['enabled'] = True
-            comwatt_client.put_device(self._ref, device)
+                        capacity_id = capacity['capacity']['id']
+            comwatt_client.switch_capacity(capacity_id, True)
 
         except Exception:
             comwatt_client.authenticate(self._username, self._password)
@@ -76,8 +80,8 @@ class ComwattSwitch(SwitchEntity):
             for feature in device['features']:
                 for capacity in feature['capacities']:
                     if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
-                        feature['enabled'] = True
-            comwatt_client.put_device(self._ref, device)
+                        capacity_id = capacity['capacity']['id']
+            comwatt_client.switch_capacity(capacity_id, True)
 
         self.schedule_update_ha_state()
 
@@ -88,8 +92,8 @@ class ComwattSwitch(SwitchEntity):
             for feature in device['features']:
                 for capacity in feature['capacities']:
                     if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
-                        feature['enabled'] = False
-            comwatt_client.put_device(self._ref, device)
+                        capacity_id = capacity['capacity']['id']
+            comwatt_client.switch_capacity(capacity_id, False)
 
         except Exception:
             comwatt_client.authenticate(self._username, self._password)
@@ -97,8 +101,8 @@ class ComwattSwitch(SwitchEntity):
             for feature in device['features']:
                 for capacity in feature['capacities']:
                     if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
-                        feature['enabled'] = False
-            comwatt_client.put_device(self._ref, device)
+                        capacity_id = capacity['capacity']['id']
+            comwatt_client.switch_capacity(capacity_id, False)
 
         self.schedule_update_ha_state()
 
@@ -109,7 +113,7 @@ class ComwattSwitch(SwitchEntity):
             for feature in device['features']:
                 for capacity in feature['capacities']:
                     if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
-                        self._is_on = feature['enabled']
+                        self._is_on = capacity['capacity']['enable']
 
         except Exception:
             comwatt_client.authenticate(self._username, self._password)
@@ -117,4 +121,4 @@ class ComwattSwitch(SwitchEntity):
             for feature in device['features']:
                 for capacity in feature['capacities']:
                     if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
-                        self._is_on = feature['enabled']
+                        self._is_on = capacity['capacity']['enable']
