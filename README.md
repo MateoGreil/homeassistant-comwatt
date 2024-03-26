@@ -29,6 +29,7 @@ This integration can handle :
 - Energy consumption of device
 - Power consumption of network in/out
 - Energy consumption of network in/out
+- Switch capcity of device
 
 ## Contributions
 Contributions and feedback are welcome! If you encounter any issues, have suggestions for improvement, or would like to contribute new features, please open an issue or submit a pull request on the GitHub repository.
