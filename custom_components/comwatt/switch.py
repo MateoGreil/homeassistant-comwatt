@@ -4,6 +4,8 @@ from homeassistant.helpers.device_registry import DeviceInfo
 import asyncio
 from .client import comwatt_client
 
+SWITCH_NATURE = ['POWER_SWITCH', 'RELAY']
+
 async def async_setup_entry(hass, entry, async_add_entities):
     new_devices = []
     sites = await asyncio.to_thread(lambda: comwatt_client.get_sites())
@@ -15,10 +17,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     childs = device["partChilds"]
                     for child in childs:
                         if 'id' in child:
-                            if 'features' in child and any('capacities' in feature and any(capacity['capacity'].get('nature') == 'POWER_SWITCH' for capacity in feature['capacities']) for feature in child['features']):
+                            if 'features' in child and any('capacities' in feature and any(capacity['capacity'].get('nature') in SWITCH_NATURE for capacity in feature['capacities']) for feature in child['features']):
                                 new_devices.append(ComwattSwitch(entry, child))
                 else:
-                    if 'features' in device and any('capacities' in feature and any(capacity['capacity'].get('nature') == 'POWER_SWITCH' for capacity in feature['capacities']) for feature in device['features']):
+                    if 'features' in device and any('capacities' in feature and any(capacity['capacity'].get('nature') in SWITCH_NATURE for capacity in feature['capacities']) for feature in device['features']):
                         new_devices.append(ComwattSwitch(entry, device))
 
     # TODO: Remove existing devices?
@@ -57,7 +59,7 @@ class ComwattSwitch(SwitchEntity):
         self._attr_name = f"{self._device['name']} Switch"
         for feature in device['features']:
             for capacity in feature['capacities']:
-                if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                if capacity.get('capacity', {}).get('nature') in SWITCH_NATURE:
                     self._is_on = capacity['capacity']['enable']
 
     @property
@@ -70,7 +72,7 @@ class ComwattSwitch(SwitchEntity):
             device = comwatt_client.get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
-                    if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                    if capacity.get('capacity', {}).get('nature') in SWITCH_NATURE:
                         capacity_id = capacity['capacity']['id']
             comwatt_client.switch_capacity(capacity_id, True)
 
@@ -79,7 +81,7 @@ class ComwattSwitch(SwitchEntity):
             device = comwatt_client.get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
-                    if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                    if capacity.get('capacity', {}).get('nature') in SWITCH_NATURE:
                         capacity_id = capacity['capacity']['id']
             comwatt_client.switch_capacity(capacity_id, True)
 
@@ -91,7 +93,7 @@ class ComwattSwitch(SwitchEntity):
             device = comwatt_client.get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
-                    if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                    if capacity.get('capacity', {}).get('nature') in SWITCH_NATURE:
                         capacity_id = capacity['capacity']['id']
             comwatt_client.switch_capacity(capacity_id, False)
 
@@ -100,7 +102,7 @@ class ComwattSwitch(SwitchEntity):
             device = comwatt_client.get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
-                    if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                    if capacity.get('capacity', {}).get('nature') in SWITCH_NATURE:
                         capacity_id = capacity['capacity']['id']
             comwatt_client.switch_capacity(capacity_id, False)
 
@@ -112,7 +114,7 @@ class ComwattSwitch(SwitchEntity):
             device = comwatt_client.get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
-                    if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                    if capacity.get('capacity', {}).get('nature') in SWITCH_NATURE:
                         self._is_on = capacity['capacity']['enable']
 
         except Exception:
@@ -120,5 +122,5 @@ class ComwattSwitch(SwitchEntity):
             device = comwatt_client.get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
-                    if capacity.get('capacity', {}).get('nature') == "POWER_SWITCH":
+                    if capacity.get('capacity', {}).get('nature') in SWITCH_NATURE:
                         self._is_on = capacity['capacity']['enable']
