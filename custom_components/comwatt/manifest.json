@@ -1,8 +1,6 @@
 {
   "domain": "comwatt",
   "name": "Comwatt",
-  "version": "0.2.1",
-  "issue_tracker": "https://github.com/MateoGreil/homeassistant-comwatt/issues",
   "codeowners": [
     "@MateoGreil"
   ],
@@ -11,9 +9,11 @@
   "documentation": "https://github.com/MateoGreil/homeassistant-comwatt/blob/main/README.md",
   "homekit": {},
   "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/MateoGreil/homeassistant-comwatt/issues",
   "requirements": [
     "comwatt-client==0.2.1"
   ],
   "ssdp": [],
+  "version": "0.2.1",
   "zeroconf": []
 }
