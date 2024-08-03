@@ -9,8 +9,10 @@
 Control your Comwatt energy monitoring system via the Comwatt API with Home Assistant.
 **Currently, this integration work only for comwatt gen 4 (and probably more, but not tested yet). If you use energy.comwatt.com, it will probably work. If you use go.comwatt.com or any other, it will not work yet (https://github.com/MateoGreil/homeassistant-comwatt/issues/7).**
 
+*[Lire en Français](README-fr.md)*
+
 ## Installation
-1. Install this integration using HACS by adding this repository or manually copy the files to your Home Assistant installation.
+1. Install this integration using [HACS](https://hacs.xyz/) by [adding this repository](https://hacs.xyz/docs/faq/custom_repositories) or manually copy the files to your Home Assistant installation.
 2. Restart Home Assistant to load the integration.
 
 ## Configuration
