@@ -45,7 +45,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     # TODO: Remove old existing devices?
 
     if new_devices:
-        async_add_entities(new_devices, update_before_add=True)
+        async_add_entities(new_devices)
 
 class ComwattSensor(SensorEntity):
     @property
