@@ -40,7 +40,7 @@ If you find this integration useful, consider supporting the development by addi
 
 [homeassistant-comwatt]: https://github.com/mateogreil/homeassistant-comwatt
 [buymecoffee]: https://dons.restosducoeur.org/particulier/~mon-don?don=5
-[buymecoffeebadge]: https://img.shields.io/badge/Buy%20me%20a%20beer-%245-orange?style=for-the-badge&logo=buy-me-a-beer
+[buymecoffeebadge]: https://img.shields.io/badge/Buy%20him%20a%20coffee-%245-orange?style=for-the-badge&logo=buy-him-a-coffee
 [commits-shield]: https://img.shields.io/github/commit-activity/y/mateogreil/homeassistant-comwatt.svg?style=for-the-badge
 [commits]: https://github.com/mateogreil/homeassistant-comwatt/commits/master
 [hacs]: https://github.com/custom-components/hacs
