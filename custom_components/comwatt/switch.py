@@ -26,7 +26,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     # TODO: Remove existing devices?
     # TODO: Remove old existing devices?
     if new_devices:
-        async_add_entities(new_devices)
+        async_add_entities(new_devices, update_before_add=True)
 
 
 class ComwattSwitch(SwitchEntity):
