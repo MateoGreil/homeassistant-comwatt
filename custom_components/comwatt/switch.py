@@ -3,7 +3,9 @@ from homeassistant.helpers.device_registry import DeviceInfo
 
 import asyncio
 from .client import comwatt_client
+from datetime import timedelta
 
+SCAN_INTERVAL = timedelta(minutes=2)
 SWITCH_NATURE = ['POWER_SWITCH', 'RELAY']
 
 async def async_setup_entry(hass, entry, async_add_entities):
