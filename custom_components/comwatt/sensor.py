@@ -18,6 +18,9 @@ from homeassistant.helpers.device_registry import DeviceInfo
 import asyncio
 from .const import DOMAIN
 from .client import comwatt_client
+from datetime import timedelta
+
+SCAN_INTERVAL = timedelta(minutes=2)
 
 async def async_setup_entry(hass, entry, async_add_entities):
     new_devices = []
