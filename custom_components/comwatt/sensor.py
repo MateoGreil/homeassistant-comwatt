@@ -17,16 +17,17 @@ from homeassistant.helpers.device_registry import DeviceInfo
 
 import asyncio
 from .const import DOMAIN
-from .client import comwatt_client
+from .client import get_client
 from datetime import timedelta
 
 SCAN_INTERVAL = timedelta(minutes=2)
 
 async def async_setup_entry(hass, entry, async_add_entities):
     new_devices = []
-    sites = await asyncio.to_thread(lambda: comwatt_client.get_sites())
+    client = get_client(legacy=(entry.data["api"] == "go"))
+    sites = await asyncio.to_thread(lambda: client.get_sites())
     for site in sites:
-        devices = await asyncio.to_thread(lambda: comwatt_client.get_devices(site['id']))
+        devices = await asyncio.to_thread(lambda: client.get_devices(site['id']))
         for device in devices:
             if 'id' in device:
                 if 'partChilds' in device and len(device['partChilds']) > 0:
@@ -73,6 +74,7 @@ class ComwattEnergySensor(ComwattSensor):
         self._device = device
         self._username = entry.data["username"]
         self._password = entry.data["password"]
+        self._legacy = entry.data["api"] == "go"
         self._attr_unique_id = f"{self._device['id']}_total_energy"
         self._attr_name = f"{self._device['name']} Total Energy"
 
@@ -81,10 +83,12 @@ class ComwattEnergySensor(ComwattSensor):
         """Fetch new state data for the sensor."""
 
         try:
-            time_series_data = comwatt_client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
+            client = get_client(self._legacy)
+            time_series_data = client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
         except Exception:
-            comwatt_client.authenticate(self._username, self._password)
-            time_series_data = comwatt_client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
+            client = get_client(self._legacy)
+            client.authenticate(self._username, self._password)
+            time_series_data = client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
 
         if self._attr_native_value == None:
             self._last_native_value_at = 0
@@ -113,10 +117,12 @@ class ComwattPowerSensor(ComwattSensor):
         """Fetch new state data for the sensor."""
 
         try:
-            time_series_data = comwatt_client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
+            client = get_client(self._legacy)
+            time_series_data = client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
         except Exception:
-            comwatt_client.authenticate(self._username, self._password)
-            time_series_data = comwatt_client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
+            client = get_client(self._legacy)
+            client.authenticate(self._username, self._password)
+            time_series_data = client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
 
         # TODO: Update to the time of comwatt and not the current time
         if time_series_data["values"]:

@@ -14,15 +14,15 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import DOMAIN
 
 import asyncio
-from .client import comwatt_client
+from .client import get_client
 
 _LOGGER = logging.getLogger(__name__)
 
-# TODO adjust the data schema to the data that you need
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required("username"): str,
         vol.Required("password"): str,
+        vol.Required("api", default="energy", description="Select 'energy' for energy.comwatt.com or 'go' for go.comwatt.com"): vol.In(["energy", "go"]),
     }
 )
 
@@ -32,12 +32,13 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
     """
-
+    
     cwt_session = None
+    client = get_client(legacy=(entry.data["api"] == "go"))
     try:
-        await asyncio.to_thread(lambda: comwatt_client.authenticate(data["username"], data["password"]))
+        await asyncio.to_thread(lambda: client.authenticate(data["username"], data["password"]))
 
-        for cookie in comwatt_client.session.cookies:
+        for cookie in client.session.cookies:
             if cookie.name == "cwt_session":
                 cwt_session = cookie
                 break
