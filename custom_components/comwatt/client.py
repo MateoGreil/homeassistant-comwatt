@@ -2,12 +2,11 @@
 from comwatt_client import ComwattClient
 from comwatt_client_legacy import ComwattClient as ComwattClientLegacy
 
-class Client:
-    def __init__(self, api = "energy"):
-        self.api = api
-        if self.api == "energy":
-            self.client = ComwattClient()
-        else:
-            self.client = ComwattClientLegacy()
+comwatt_client = ComwattClient()
+comwatt_client_legacy = ComwattClientLegacy()
 
-comwatt_client = Client()
+ def get_client(legacy: bool = False):                                                                                                                                                                                                 
+     """Return the appropriate client based on legacy flag."""                                                                                                                                                                         
+     if legacy:                                                                                                                                                                                                                        
+         return ComwattClientLegacy()                                                                                                                                                                                                  
+     return ComwattClient()                                                                                                                                                                                                            

@@ -6,7 +6,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
-from .client import comwatt_client
+from .client import get_client
 
 import asyncio
 
@@ -18,7 +18,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Set default DOMAIN
     hass.data.setdefault(DOMAIN, {})
 
-    await asyncio.to_thread(lambda: comwatt_client.authenticate(entry.data["username"], entry.data["password"]))
+    await asyncio.to_thread(lambda: get_client(legacy=(entry.data["api"] == "go")).authenticate(entry.data["username"], entry.data["password"]))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

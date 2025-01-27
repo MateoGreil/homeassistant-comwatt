@@ -2,7 +2,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.helpers.device_registry import DeviceInfo
 
 import asyncio
-from .client import comwatt_client
+from .client import get_client
 from datetime import timedelta
 
 SCAN_INTERVAL = timedelta(minutes=2)
@@ -10,9 +10,10 @@ SWITCH_NATURE = ['POWER_SWITCH', 'RELAY']
 
 async def async_setup_entry(hass, entry, async_add_entities):
     new_devices = []
-    sites = await asyncio.to_thread(lambda: comwatt_client.get_sites())
+    client = get_client(legacy=(entry.data["api"] == "go"))
+    sites = await asyncio.to_thread(lambda: client.get_sites())
     for site in sites:
-        devices = await asyncio.to_thread(lambda: comwatt_client.get_devices(site['id']))
+        devices = await asyncio.to_thread(lambda: client.get_devices(site['id']))
         for device in devices:
             if 'id' in device:
                 if 'partChilds' in device and len(device['partChilds']) > 0:
@@ -56,6 +57,7 @@ class ComwattSwitch(SwitchEntity):
         self._device = device
         self._username = entry.data["username"]
         self._password = entry.data["password"]
+        self._legacy = entry.data["api"] == "go"
         self._ref = self._device['id']
         self._attr_unique_id = f"{self._device['id']}_switch"
         self._attr_name = f"{self._device['name']} Switch"
@@ -71,57 +73,57 @@ class ComwattSwitch(SwitchEntity):
     def turn_on(self, **kwargs) -> None:
         """Turn the entity on."""
         try:
-            device = comwatt_client.get_device(self._ref)
+            device = get_client(self._legacy).get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
                     if capacity.get('capacity', {}).get('nature') in SWITCH_NATURE:
                         capacity_id = capacity['capacity']['id']
-            comwatt_client.switch_capacity(capacity_id, True)
+            get_client(self._legacy).switch_capacity(capacity_id, True)
 
         except Exception:
-            comwatt_client.authenticate(self._username, self._password)
-            device = comwatt_client.get_device(self._ref)
+            get_client(self._legacy).authenticate(self._username, self._password)
+            device = get_client(self._legacy).get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
                     if capacity.get('capacity', {}).get('nature') in SWITCH_NATURE:
                         capacity_id = capacity['capacity']['id']
-            comwatt_client.switch_capacity(capacity_id, True)
+            get_client(self._legacy).switch_capacity(capacity_id, True)
 
         self.schedule_update_ha_state()
 
     def turn_off(self, **kwargs) -> None:
         """Turn the entity off."""
         try:
-            device = comwatt_client.get_device(self._ref)
+            device = get_client(self._legacy).get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
                     if capacity.get('capacity', {}).get('nature') in SWITCH_NATURE:
                         capacity_id = capacity['capacity']['id']
-            comwatt_client.switch_capacity(capacity_id, False)
+            get_client(self._legacy).switch_capacity(capacity_id, False)
 
         except Exception:
-            comwatt_client.authenticate(self._username, self._password)
-            device = comwatt_client.get_device(self._ref)
+            get_client(self._legacy).authenticate(self._username, self._password)
+            device = get_client(self._legacy).get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
                     if capacity.get('capacity', {}).get('nature') in SWITCH_NATURE:
                         capacity_id = capacity['capacity']['id']
-            comwatt_client.switch_capacity(capacity_id, False)
+            get_client(self._legacy).switch_capacity(capacity_id, False)
 
         self.schedule_update_ha_state()
 
     def update(self) -> None:
         """Fetch new state data for the sensor."""
         try:
-            device = comwatt_client.get_device(self._ref)
+            device = get_client(self._legacy).get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
                     if capacity.get('capacity', {}).get('nature') in SWITCH_NATURE:
                         self._is_on = capacity['capacity']['enable']
 
         except Exception:
-            comwatt_client.authenticate(self._username, self._password)
-            device = comwatt_client.get_device(self._ref)
+            get_client(self._legacy).authenticate(self._username, self._password)
+            device = get_client(self._legacy).get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
                     if capacity.get('capacity', {}).get('nature') in SWITCH_NATURE:
