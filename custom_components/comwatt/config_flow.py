@@ -18,11 +18,11 @@ from .client import comwatt_client
 
 _LOGGER = logging.getLogger(__name__)
 
-# TODO adjust the data schema to the data that you need
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required("username"): str,
         vol.Required("password"): str,
+        vol.Required("api", default="energy", description="Select 'energy' for energy.comwatt.com or 'go' for go.comwatt.com"): vol.In(["energy", "go"]),
     }
 )
 
