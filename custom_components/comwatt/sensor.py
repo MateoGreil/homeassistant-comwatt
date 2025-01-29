@@ -8,7 +8,8 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import (
     UnitOfPower,
-    UnitOfEnergy
+    UnitOfEnergy,
+    PERCENTAGE
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -29,6 +30,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
     new_devices = []
     sites = await asyncio.to_thread(lambda: client.get_sites())
     for site in sites:
+        new_devices.append(ComwattAutoProductionRateSensor(entry, site))
+
         devices = await asyncio.to_thread(lambda: client.get_devices(site['id']))
         for device in devices:
             if 'id' in device:
@@ -50,9 +53,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class ComwattSensor(SensorEntity):
     @property
     def device_info(self) -> DeviceInfo:
-        """Return te devce info."""
+        """Return te device info."""
         if 'deviceKind' in self._device and 'code' in self._device['deviceKind']:
             model = self._device['deviceKind']['code']
+        elif 'siteKind' in self._device:
+            model = self._device['siteKind']
         else:
             model = None
 
@@ -64,6 +69,35 @@ class ComwattSensor(SensorEntity):
             name=self._device['name'],
             model=model
         )
+
+class ComwattAutoProductionRateSensor(ComwattSensor):
+    """Representation of an Auto Production Rate Sensor."""
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, entry, device):
+        self._device = device
+        self._username = entry.data["username"]
+        self._password = entry.data["password"]
+        self._attr_unique_id = f"site_{self._device['id']}_auto_production_rate"
+        self._attr_name = f"{self._device['name']} Auto Production Rate"
+
+    def update(self) -> None:
+        """Fetch new state data for the sensor."""
+        client = ComwattClient()
+        client.session.cookies.update(self.hass.data[DOMAIN]["cookies"])
+        try:
+            time_series_data = client.get_site_networks_ts_time_ago(self._device["id"], "FLOW", "NONE", None, "HOUR", 1)
+            self._attr_native_value = auto_production_rate
+        except Exception:
+            client.authenticate(self._username, self._password)
+            self.hass.data[DOMAIN]["cookies"] = client.session.cookies.get_dict()
+            time_series_data = client.get_site_networks_ts_time_ago(self._device["id"], "FLOW", "NONE", None, "HOUR", 1)
+
+        # TODO: Update to the time of comwatt and not the current time
+        if time_series_data["autoproductionRates"]:
+            self._attr_native_value = time_series_data["autoproductionRates"][-1] * 100
+
 
 class ComwattEnergySensor(ComwattSensor):
     """Representation of a Sensor."""
