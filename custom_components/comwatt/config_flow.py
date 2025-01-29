@@ -14,7 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import DOMAIN
 
 import asyncio
-from .client import comwatt_client
+from comwatt_client import ComwattClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,10 +34,12 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     """
 
     cwt_session = None
-    try:
-        await asyncio.to_thread(lambda: comwatt_client.authenticate(data["username"], data["password"]))
+    client = ComwattClient()
 
-        for cookie in comwatt_client.session.cookies:
+    try:
+        await asyncio.to_thread(lambda: client.authenticate(data["username"], data["password"]))
+
+        for cookie in client.session.cookies:
             if cookie.name == "cwt_session":
                 cwt_session = cookie
                 break
