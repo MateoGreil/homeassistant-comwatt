@@ -11,7 +11,7 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/MateoGreil/homeassistant-comwatt/issues",
   "requirements": [
-    "comwatt-client==0.2.1"
+    "comwatt-client==0.2.3"
   ],
   "ssdp": [],
   "version": "0.2.3",
