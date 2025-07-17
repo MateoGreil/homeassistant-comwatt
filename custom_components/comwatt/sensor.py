@@ -120,11 +120,11 @@ class ComwattEnergySensor(ComwattSensor):
         client.session.cookies.update(self.hass.data[DOMAIN]["cookies"])
 
         try:
-            time_series_data = client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
+            time_series_data = client.get_device_ts_time_ago(self._device["id"], "QUANTITY", "HOUR", "NONE")
         except Exception:
             client.authenticate(self._username, self._password)
             self.hass.data[DOMAIN]["cookies"] = client.session.cookies.get_dict()
-            time_series_data = client.get_device_ts_time_ago(self._device["id"], "VIRTUAL_QUANTITY", "HOUR", "NONE")
+            time_series_data = client.get_device_ts_time_ago(self._device["id"], "QUANTITY", "HOUR", "NONE")
 
         if self._attr_native_value == None:
             self._last_native_value_at = 0
