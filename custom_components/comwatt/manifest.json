@@ -14,6 +14,6 @@
     "comwatt-client==0.2.3"
   ],
   "ssdp": [],
-  "version": "0.2.3",
+  "version": "0.3.1",
   "zeroconf": []
 }
