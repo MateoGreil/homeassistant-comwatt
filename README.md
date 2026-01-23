@@ -12,7 +12,7 @@
 # Comwatt Integration for Home Assistant
 
 Control your Comwatt energy monitoring system via the Comwatt API with Home Assistant.
-**Currently, this integration work only for comwatt gen 4 (and probably more, but not tested yet). If you use energy.comwatt.com, it will probably work. If you use go.comwatt.com or any other, it will not work yet (<https://github.com/MateoGreil/homeassistant-comwatt/issues/7>).**
+This integration work only with Comwatt Gen 4 (energy.comwatt.com). If you use go.comwatt.com, you need to use the [ComwattIndepbox integration](https://github.com/ZoomeoTooknor/comwatt_indepbox)
 
 _[Lire en Français](README-fr.md)_
 
