@@ -53,15 +53,15 @@ def _make_fake_client() -> MagicMock:
 
 @pytest.fixture
 def mock_comwatt_client() -> Generator[MagicMock, None, None]:
-    """Patch ComwattClient wherever the integration imports it."""
+    """Patch ComwattClient at the two sites the integration imports it.
+
+    The coordinator owns the long-lived client; the config flow still creates
+    a one-shot client for credential validation.
+    """
     instance = _make_fake_client()
     with patch(
-        "custom_components.comwatt.ComwattClient", return_value=instance
+        "custom_components.comwatt.coordinator.ComwattClient", return_value=instance
     ), patch(
         "custom_components.comwatt.config_flow.ComwattClient", return_value=instance
-    ), patch(
-        "custom_components.comwatt.sensor.ComwattClient", return_value=instance
-    ), patch(
-        "custom_components.comwatt.switch.ComwattClient", return_value=instance
     ):
         yield instance
