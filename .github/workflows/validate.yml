@@ -44,3 +44,14 @@ jobs:
         run: pip install -r requirements-test.txt
       - name: Run pytest
         run: pytest
+  type-check-mypy:
+    runs-on: "ubuntu-latest"
+    # `actions/checkout` is a JS action, so the job container needs node.
+    # Use an image that ships both Python and Node instead of plain python:3.12.
+    container: "nikolaik/python-nodejs:python3.12-nodejs20"
+    steps:
+      - uses: "actions/checkout@v4"
+      - name: Install mypy and runtime deps
+        run: pip install mypy homeassistant comwatt-client
+      - name: Run mypy
+        run: mypy
