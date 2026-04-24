@@ -9,6 +9,10 @@ on:
 
 jobs:
   validate-hacs:
+    # HACS validation queries the HACS backend for the repository on github.com,
+    # and the hassfest action is Docker-based. Both are GitHub-only; skip them
+    # when this workflow runs on a non-GitHub forge (e.g. Forgejo mirror).
+    if: github.server_url == 'https://github.com'
     runs-on: "ubuntu-latest"
     steps:
       - uses: "actions/checkout@v3"
@@ -17,6 +21,7 @@ jobs:
         with:
           category: "integration"
   validate-hassfest:
+    if: github.server_url == 'https://github.com'
     runs-on: "ubuntu-latest"
     steps:
         - uses: "actions/checkout@v4"
