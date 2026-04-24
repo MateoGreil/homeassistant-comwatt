@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -32,16 +31,9 @@ async def test_setup_entry_authenticates_and_loads(
     mock_comwatt_client.authenticate.assert_called_with(
         ENTRY_DATA["username"], ENTRY_DATA["password"]
     )
-    assert "cookies" in hass.data[DOMAIN]
-    assert hass.data[DOMAIN]["cookies"] == {"cwt_session": "fake"}
+    assert hass.data[DOMAIN][entry.entry_id]["cookies"] == {"cwt_session": "fake"}
 
 
-@pytest.mark.xfail(
-    reason="Finding C5: async_unload_entry pops entry.entry_id, but setup never stores "
-    "anything under that key — it only writes to hass.data[DOMAIN]['cookies']. "
-    "Will pass once C5 is fixed.",
-    strict=True,
-)
 async def test_unload_entry_cleans_up(
     hass: HomeAssistant, mock_comwatt_client: MagicMock
 ) -> None:
@@ -50,7 +42,9 @@ async def test_unload_entry_cleans_up(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
+    assert entry.entry_id in hass.data[DOMAIN]
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.NOT_LOADED
+    assert entry.entry_id not in hass.data[DOMAIN]

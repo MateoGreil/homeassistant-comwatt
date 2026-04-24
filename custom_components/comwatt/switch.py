@@ -12,7 +12,7 @@ SWITCH_NATURE = ['POWER_SWITCH', 'RELAY']
 
 async def async_setup_entry(hass, entry, async_add_entities):
     client = ComwattClient()
-    client.session.cookies.update(hass.data[DOMAIN]["cookies"])
+    client.session.cookies.update(hass.data[DOMAIN][entry.entry_id]["cookies"])
 
     new_devices = []
     sites = await asyncio.to_thread(lambda: client.get_sites())
@@ -59,6 +59,7 @@ class ComwattSwitch(SwitchEntity):
 
     def __init__(self, entry, device):
         self._device = device
+        self._entry_id = entry.entry_id
         self._username = entry.data["username"]
         self._password = entry.data["password"]
         self._ref = self._device['id']
@@ -76,7 +77,7 @@ class ComwattSwitch(SwitchEntity):
     def turn_on(self, **kwargs) -> None:
         """Turn the entity on."""
         client = ComwattClient()
-        client.session.cookies.update(self.hass.data[DOMAIN]["cookies"])
+        client.session.cookies.update(self.hass.data[DOMAIN][self._entry_id]["cookies"])
 
         try:
             device = client.get_device(self._ref)
@@ -88,7 +89,7 @@ class ComwattSwitch(SwitchEntity):
 
         except Exception:
             client.authenticate(self._username, self._password)
-            self.hass.data[DOMAIN]["cookies"] = client.session.cookies.get_dict()
+            self.hass.data[DOMAIN][self._entry_id]["cookies"] = client.session.cookies.get_dict()
             device = client.get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
@@ -101,7 +102,7 @@ class ComwattSwitch(SwitchEntity):
     def turn_off(self, **kwargs) -> None:
         """Turn the entity off."""
         client = ComwattClient()
-        client.session.cookies.update(self.hass.data[DOMAIN]["cookies"])
+        client.session.cookies.update(self.hass.data[DOMAIN][self._entry_id]["cookies"])
 
         try:
             device = client.get_device(self._ref)
@@ -113,7 +114,7 @@ class ComwattSwitch(SwitchEntity):
 
         except Exception:
             client.authenticate(self._username, self._password)
-            self.hass.data[DOMAIN]["cookies"] = client.session.cookies.get_dict()
+            self.hass.data[DOMAIN][self._entry_id]["cookies"] = client.session.cookies.get_dict()
             device = client.get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
@@ -126,7 +127,7 @@ class ComwattSwitch(SwitchEntity):
     def update(self) -> None:
         """Fetch new state data for the sensor."""
         client = ComwattClient()
-        client.session.cookies.update(self.hass.data[DOMAIN]["cookies"])
+        client.session.cookies.update(self.hass.data[DOMAIN][self._entry_id]["cookies"])
 
         try:
             device = client.get_device(self._ref)
@@ -137,7 +138,7 @@ class ComwattSwitch(SwitchEntity):
 
         except Exception:
             client.authenticate(self._username, self._password)
-            self.hass.data[DOMAIN]["cookies"] = client.session.cookies.get_dict()
+            self.hass.data[DOMAIN][self._entry_id]["cookies"] = client.session.cookies.get_dict()
             device = client.get_device(self._ref)
             for feature in device['features']:
                 for capacity in feature['capacities']:
