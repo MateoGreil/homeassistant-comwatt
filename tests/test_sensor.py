@@ -168,14 +168,8 @@ async def test_energy_sensor_accumulates_new_buckets(
     assert state.attributes["state_class"] == SensorStateClass.TOTAL_INCREASING
 
 
-@pytest.mark.xfail(
-    reason="Finding C1: sensor.py:91 references undefined name `auto_production_rate` "
-    "inside the try-block. The bare `except Exception` swallows the NameError and "
-    "forces a re-auth every poll. Will pass once C1 is fixed.",
-    strict=False,
-)
 async def test_auto_production_rate_reads_latest_value(
-    hass: HomeAssistant, mock_comwatt_client: MagicMock, caplog: pytest.LogCaptureFixture
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
 ) -> None:
     """The auto-production-rate sensor reports `autoproductionRates[-1] * 100`."""
     mock_comwatt_client.get_sites.return_value = [SITE]
@@ -193,6 +187,6 @@ async def test_auto_production_rate_reads_latest_value(
     assert state is not None
     assert state.state == "42.0"
     assert state.attributes["unit_of_measurement"] == PERCENTAGE
-    # Current code forces a re-auth on every poll because of the NameError.
-    # Assert the bug's side-effect so a future fix will flip this to xpass.
+    # Only the setup-time authenticate call; update() should not re-auth on a
+    # successful fetch.
     assert mock_comwatt_client.authenticate.call_count == 1

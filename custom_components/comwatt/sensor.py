@@ -88,7 +88,6 @@ class ComwattAutoProductionRateSensor(ComwattSensor):
         client.session.cookies.update(self.hass.data[DOMAIN]["cookies"])
         try:
             time_series_data = client.get_site_networks_ts_time_ago(self._device["id"], "FLOW", "NONE", None, "HOUR", 1)
-            self._attr_native_value = auto_production_rate
         except Exception:
             client.authenticate(self._username, self._password)
             self.hass.data[DOMAIN]["cookies"] = client.session.cookies.get_dict()
