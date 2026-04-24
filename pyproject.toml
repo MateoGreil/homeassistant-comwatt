@@ -1,0 +1,22 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "F",  # pyflakes
+    "W",  # pycodestyle warnings
+    "I",  # isort
+    "UP", # pyupgrade
+]
+
+# Temporary ignores — each is tracked by a finding in the initial code
+# review and will be removed in the PR that fixes that finding.
+ignore = [
+    "E501",  # line-too-long — code-style cleanup is tracked separately
+    "E711",  # == None (L3)
+    "F401",  # unused imports (M5)
+    "F821",  # undefined name auto_production_rate (C1)
+    "I001",  # import ordering (code-style cleanup tracked separately)
+]

@@ -26,3 +26,10 @@ jobs:
     steps:
         - uses: "actions/checkout@v4"
         - uses: "home-assistant/actions/hassfest@master"
+  lint-ruff:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v4"
+      - uses: "https://github.com/astral-sh/ruff-action@v3"
+        with:
+          version: "0.15.11"
