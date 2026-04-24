@@ -5,31 +5,26 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
-from comwatt_client import ComwattClient
-
-import asyncio
+from .coordinator import ComwattCoordinator
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.SWITCH]
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+type ComwattConfigEntry = ConfigEntry[ComwattCoordinator]
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ComwattConfigEntry) -> bool:
     """Set up Comwatt from a config entry."""
+    coordinator = ComwattCoordinator(hass, entry)
+    # `async_config_entry_first_refresh` raises `ConfigEntryAuthFailed` or
+    # `ConfigEntryNotReady` for us based on the exception the coordinator
+    # raised, so no explicit re-raise is needed here.
+    await coordinator.async_config_entry_first_refresh()
 
-    hass.data.setdefault(DOMAIN, {})
-
-    client = ComwattClient()
-    await asyncio.to_thread(lambda: client.authenticate(entry.data["username"], entry.data["password"]))
-
-    hass.data[DOMAIN][entry.entry_id] = {"cookies": client.session.cookies.get_dict()}
-
+    entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ComwattConfigEntry) -> bool:
     """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-
-    return unload_ok
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

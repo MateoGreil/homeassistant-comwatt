@@ -162,7 +162,7 @@ async def test_energy_sensor_accumulates_new_buckets(
 
     state = hass.states.get("sensor.panel_total_energy")
     assert state is not None
-    assert state.state == "42"
+    assert state.state == "42.0"
     assert state.attributes["unit_of_measurement"] == UnitOfEnergy.WATT_HOUR
     assert state.attributes["device_class"] == SensorDeviceClass.ENERGY
     assert state.attributes["state_class"] == SensorStateClass.TOTAL_INCREASING
