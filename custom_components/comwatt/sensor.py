@@ -25,7 +25,7 @@ SCAN_INTERVAL = timedelta(minutes=2)
 
 async def async_setup_entry(hass, entry, async_add_entities):
     client = ComwattClient()
-    client.session.cookies.update(hass.data[DOMAIN]["cookies"])
+    client.session.cookies.update(hass.data[DOMAIN][entry.entry_id]["cookies"])
 
     new_devices = []
     sites = await asyncio.to_thread(lambda: client.get_sites())
@@ -77,6 +77,7 @@ class ComwattAutoProductionRateSensor(ComwattSensor):
 
     def __init__(self, entry, device):
         self._device = device
+        self._entry_id = entry.entry_id
         self._username = entry.data["username"]
         self._password = entry.data["password"]
         self._attr_unique_id = f"site_{self._device['id']}_auto_production_rate"
@@ -85,12 +86,12 @@ class ComwattAutoProductionRateSensor(ComwattSensor):
     def update(self) -> None:
         """Fetch new state data for the sensor."""
         client = ComwattClient()
-        client.session.cookies.update(self.hass.data[DOMAIN]["cookies"])
+        client.session.cookies.update(self.hass.data[DOMAIN][self._entry_id]["cookies"])
         try:
             time_series_data = client.get_site_networks_ts_time_ago(self._device["id"], "FLOW", "NONE", None, "HOUR", 1)
         except Exception:
             client.authenticate(self._username, self._password)
-            self.hass.data[DOMAIN]["cookies"] = client.session.cookies.get_dict()
+            self.hass.data[DOMAIN][self._entry_id]["cookies"] = client.session.cookies.get_dict()
             time_series_data = client.get_site_networks_ts_time_ago(self._device["id"], "FLOW", "NONE", None, "HOUR", 1)
 
         # TODO: Update to the time of comwatt and not the current time
@@ -107,6 +108,7 @@ class ComwattEnergySensor(ComwattSensor):
 
     def __init__(self, entry, device):
         self._device = device
+        self._entry_id = entry.entry_id
         self._username = entry.data["username"]
         self._password = entry.data["password"]
         self._attr_unique_id = f"{self._device['id']}_total_energy"
@@ -116,13 +118,13 @@ class ComwattEnergySensor(ComwattSensor):
     def update(self) -> None:
         """Fetch new state data for the sensor."""
         client = ComwattClient()
-        client.session.cookies.update(self.hass.data[DOMAIN]["cookies"])
+        client.session.cookies.update(self.hass.data[DOMAIN][self._entry_id]["cookies"])
 
         try:
             time_series_data = client.get_device_ts_time_ago(self._device["id"], "QUANTITY", "HOUR", "NONE")
         except Exception:
             client.authenticate(self._username, self._password)
-            self.hass.data[DOMAIN]["cookies"] = client.session.cookies.get_dict()
+            self.hass.data[DOMAIN][self._entry_id]["cookies"] = client.session.cookies.get_dict()
             time_series_data = client.get_device_ts_time_ago(self._device["id"], "QUANTITY", "HOUR", "NONE")
 
         if self._attr_native_value == None:
@@ -143,6 +145,7 @@ class ComwattPowerSensor(ComwattSensor):
 
     def __init__(self, entry, device):
         self._device = device
+        self._entry_id = entry.entry_id
         self._username = entry.data["username"]
         self._password = entry.data["password"]
         self._attr_unique_id = f"{self._device['id']}_power"
@@ -151,13 +154,13 @@ class ComwattPowerSensor(ComwattSensor):
     def update(self) -> None:
         """Fetch new state data for the sensor."""
         client = ComwattClient()
-        client.session.cookies.update(self.hass.data[DOMAIN]["cookies"])
+        client.session.cookies.update(self.hass.data[DOMAIN][self._entry_id]["cookies"])
 
         try:
             time_series_data = client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
         except Exception:
             client.authenticate(self._username, self._password)
-            self.hass.data[DOMAIN]["cookies"] = client.session.cookies.get_dict()
+            self.hass.data[DOMAIN][self._entry_id]["cookies"] = client.session.cookies.get_dict()
             time_series_data = client.get_device_ts_time_ago(self._device["id"], "FLOW", "NONE", "NONE", "HOUR", 1)
 
         # TODO: Update to the time of comwatt and not the current time
