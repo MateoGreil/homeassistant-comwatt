@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.comwatt.const import DOMAIN
 
@@ -99,3 +100,90 @@ async def test_schema_requires_credentials(
 
     with pytest.raises(vol.Invalid):
         await hass.config_entries.flow.async_configure(result["flow_id"], partial)
+
+
+# ----------------------------------------------------------------------
+# Reauth flow (finding C7)
+# ----------------------------------------------------------------------
+
+
+def _add_entry(hass: HomeAssistant) -> MockConfigEntry:
+    entry = MockConfigEntry(domain=DOMAIN, data=USER_INPUT, title=USER_INPUT["username"])
+    entry.add_to_hass(hass)
+    return entry
+
+
+async def test_reauth_prompts_for_new_password(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Starting a reauth flow shows the reauth_confirm form, prefilling the
+    username in the description placeholder."""
+    entry = _add_entry(hass)
+
+    result = await entry.start_reauth_flow(hass)
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "reauth_confirm"
+    assert result["errors"] == {}
+    assert result["description_placeholders"]["username"] == USER_INPUT["username"]
+
+
+async def test_reauth_happy_path_updates_password(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A valid new password replaces the entry's password and aborts with
+    `reauth_successful`."""
+    entry = _add_entry(hass)
+    init = await entry.start_reauth_flow(hass)
+
+    result = await hass.config_entries.flow.async_configure(
+        init["flow_id"], {"password": "new-password"}
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert entry.data == {**USER_INPUT, "password": "new-password"}
+    mock_comwatt_client.authenticate.assert_any_call(
+        USER_INPUT["username"], "new-password"
+    )
+
+
+async def test_reauth_invalid_auth_keeps_form_open(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """If the new password is rejected by the backend, the form stays open
+    with `invalid_auth` and the entry's data is not touched."""
+    # Simulate the same invalid-auth condition as the initial flow: a
+    # successful authenticate() but no cwt_session cookie.
+    mock_comwatt_client.session.cookies = [_FakeCookie("other", "x")]
+
+    entry = _add_entry(hass)
+    init = await entry.start_reauth_flow(hass)
+
+    result = await hass.config_entries.flow.async_configure(
+        init["flow_id"], {"password": "still-wrong"}
+    )
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_auth"}
+    assert entry.data == USER_INPUT  # unchanged
+
+
+async def test_reauth_cannot_connect_keeps_form_open(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A transient backend error shows `cannot_connect` without losing the
+    entry's current credentials."""
+    mock_comwatt_client.authenticate.side_effect = RuntimeError("boom")
+
+    entry = _add_entry(hass)
+    init = await entry.start_reauth_flow(hass)
+
+    result = await hass.config_entries.flow.async_configure(
+        init["flow_id"], {"password": "anything"}
+    )
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert entry.data == USER_INPUT
