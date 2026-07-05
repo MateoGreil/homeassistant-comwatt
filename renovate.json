@@ -3,6 +3,14 @@
   "extends": ["config:recommended"],
   "timezone": "Europe/Paris",
   "platformAutomerge": false,
+  "semanticCommits": "disabled",
+  "commitMessagePrefix": "⬆️",
+  "pin": {
+    "commitMessagePrefix": "📌"
+  },
+  "rollback": {
+    "commitMessagePrefix": "⬇️"
+  },
   "customManagers": [
     {
       "customType": "regex",
