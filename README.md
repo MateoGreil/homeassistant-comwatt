@@ -20,20 +20,50 @@ _[Lire en Français](README-fr.md)_
 
 This Comwatt Integration for Home Assistant is not affiliated with, endorsed by, or in any way officially connected to Comwatt or its parent company. The integration is provided as-is and is not guaranteed to be suitable for any particular purpose. The use of this integration is at your own risk, and the author(s) of this integration will not be liable for any damages arising from the use or misuse of this integration.
 
+## Prerequisites
+
+- A working Comwatt account at [energy.comwatt.com](https://energy.comwatt.com) (Comwatt Gen 4). Log in there first to confirm your credentials work and that your devices appear.
+- Home Assistant 2024.10 or newer.
+- [HACS](https://hacs.xyz/) installed in Home Assistant (recommended for updates).
+
 ## Installation
 
-1. Install this integration using [HACS](https://hacs.xyz/) by [adding this repository](https://hacs.xyz/docs/faq/custom_repositories) or manually copy the files to your Home Assistant installation.
-2. Restart Home Assistant to load the integration.
+### Via HACS (recommended)
+
+1. Open HACS in Home Assistant (left sidebar).
+2. Go to **Integrations**, click the three-dot menu in the top-right, choose **Custom repositories**.
+3. Paste `https://github.com/MateoGreil/homeassistant-comwatt` in the **Repository** field, pick **Integration** as the category, click **Add**.
+4. Back on the Integrations list, search for **Comwatt** and click **Download**.
+5. Restart Home Assistant (Settings → System → Restart).
+
+### Manual installation
+
+1. Download the latest release archive from [the Releases page](https://github.com/MateoGreil/homeassistant-comwatt/releases).
+2. Extract it and copy the `custom_components/comwatt/` folder into your Home Assistant configuration directory (for example `/config/custom_components/comwatt/`).
+3. Restart Home Assistant.
 
 ## Configuration
 
-After installation, search and add component Comwatt in Home Assistant integrations page.
+1. In Home Assistant, go to **Settings → Devices & services → + Add integration**, search for **Comwatt** and click it.
+   *Or* click this shortcut: [![Add integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start?domain=comwatt)
+2. Enter your Comwatt credentials:
+   - **Username**: the email address you use to log in at [energy.comwatt.com](https://energy.comwatt.com).
+   - **Password**: the password of that Comwatt account (**not** a Home Assistant password).
+3. Click **Submit**. After a few seconds you should see a success message and a new **Comwatt** device card.
 
-Or click [![Configuration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start?domain=comwatt)
+### Verifying it works
+
+Open **Settings → Devices & services → Comwatt → *your site*** — you should see:
+
+- One device per site, with sensors for auto-production rate, production, consumption, injection, withdrawal…
+- One device per meter / appliance reported by the Comwatt box, with **Power** and **Total Energy** sensors.
+- A **Switch** entity for any device that exposes a `POWER_SWITCH` / `RELAY` capacity (remotely controllable plugs, relays…).
+
+If sensors show `unavailable` for more than a few minutes, check the Home Assistant log (Settings → System → Logs, filter on *comwatt*). Common causes: wrong credentials (the integration will prompt for a re-auth), Comwatt backend outage, or the account belongs to the older `go.comwatt.com` (Gen 3) platform — that one needs the [ComwattIndepbox integration](https://github.com/ZoomeoTooknor/comwatt_indepbox) instead.
 
 ## Usage
 
-Once the integration is set up and configured, you will have access to sensors representing energy consumption and power consumption from your Comwatt devices. These entities can be added to your Home Assistant dashboard for monitoring and automation purposes.
+Once set up, you have sensors for energy and power per device you can add to your dashboard or use in automations. The `*_total_energy` sensors can be used in the **Energy dashboard** (Settings → Dashboards → Energy).
 
 ## Features
 

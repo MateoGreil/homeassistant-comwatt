@@ -20,20 +20,50 @@ _[Read in English](README.md)_
 
 Cette intégration Comwatt pour Home Assistant n'est pas affiliée, approuvée ou officiellement connectée de quelque manière que ce soit à Comwatt ou à sa société mère. L'intégration est fournie telle quelle et n'est pas garantie d'être adaptée à un usage particulier. L'utilisation de cette intégration se fait à vos propres risques, et le(s) auteur(s) de cette intégration ne seront pas responsables des dommages résultant de l'utilisation ou de la mauvaise utilisation de cette intégration.
 
+## Pré-requis
+
+- Un compte Comwatt fonctionnel sur [energy.comwatt.com](https://energy.comwatt.com) (Comwatt Gen 4). Connectez-vous d'abord sur ce site pour vérifier que vos identifiants marchent et que vos appareils apparaissent.
+- Home Assistant 2024.10 ou plus récent.
+- [HACS](https://hacs.xyz/) installé dans Home Assistant (recommandé pour les mises à jour).
+
 ## Installation
 
-1. Installez cette intégration en utilisant [HACS](https://hacs.xyz/) en [ajoutant ce dépôt](https://hacs.xyz/docs/faq/custom_repositories) ou en copiant manuellement les fichiers dans votre installation Home Assistant.
-2. Redémarrez Home Assistant pour charger l'intégration.
+### Via HACS (recommandé)
+
+1. Ouvrez HACS dans Home Assistant (barre latérale gauche).
+2. Allez dans **Intégrations**, cliquez sur le menu à trois points en haut à droite, choisissez **Dépôts personnalisés**.
+3. Collez `https://github.com/MateoGreil/homeassistant-comwatt` dans le champ **Dépôt**, choisissez **Intégration** comme catégorie, puis **Ajouter**.
+4. De retour dans la liste des intégrations, cherchez **Comwatt** et cliquez sur **Télécharger**.
+5. Redémarrez Home Assistant (Paramètres → Système → Redémarrer).
+
+### Installation manuelle
+
+1. Téléchargez la dernière archive depuis [la page des Releases](https://github.com/MateoGreil/homeassistant-comwatt/releases).
+2. Extrayez-la et copiez le dossier `custom_components/comwatt/` dans le répertoire de configuration de Home Assistant (par exemple `/config/custom_components/comwatt/`).
+3. Redémarrez Home Assistant.
 
 ## Configuration
 
-Après l'installation, recherchez et ajoutez le composant Comwatt sur la page des intégrations de Home Assistant.
+1. Dans Home Assistant, allez dans **Paramètres → Appareils & services → + Ajouter une intégration**, cherchez **Comwatt** et cliquez dessus.
+   *Ou* cliquez sur ce raccourci : [![Ajouter l'intégration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start?domain=comwatt)
+2. Saisissez vos identifiants Comwatt :
+   - **Nom d'utilisateur** : l'adresse e-mail que vous utilisez pour vous connecter à [energy.comwatt.com](https://energy.comwatt.com).
+   - **Mot de passe** : le mot de passe de ce compte Comwatt (**pas** un mot de passe Home Assistant).
+3. Cliquez sur **Valider**. Quelques secondes plus tard, vous devriez voir un message de succès et une nouvelle carte **Comwatt**.
 
-Ou cliquez sur [![Configuration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start?domain=comwatt)
+### Vérification
+
+Ouvrez **Paramètres → Appareils & services → Comwatt → *votre site*** — vous devriez voir :
+
+- Un appareil par site, avec des capteurs pour le taux d'autoproduction, la production, la consommation, l'injection, le soutirage…
+- Un appareil par compteur / équipement remonté par la box Comwatt, avec les capteurs **Power** et **Total Energy**.
+- Un interrupteur (**Switch**) pour tout appareil exposant une capacité `POWER_SWITCH` / `RELAY` (prises commandables, relais…).
+
+Si des capteurs restent `unavailable` plus de quelques minutes, consultez le journal Home Assistant (Paramètres → Système → Journaux, filtrez sur *comwatt*). Causes classiques : mauvais identifiants (l'intégration proposera de les ressaisir), panne chez Comwatt, ou le compte dépend de l'ancienne plateforme `go.comwatt.com` (Gen 3) — dans ce cas il faut l'intégration [ComwattIndepbox](https://github.com/ZoomeoTooknor/comwatt_indepbox).
 
 ## Utilisation
 
-Une fois l'intégration configurée, vous aurez accès à des capteurs représentant la consommation d'énergie et la consommation électrique de vos appareils Comwatt. Ces entités peuvent être ajoutées à votre tableau de bord Home Assistant pour la surveillance et l'automatisation.
+Une fois configurée, vous disposez de capteurs d'énergie et de puissance par appareil, utilisables dans votre tableau de bord ou dans des automatisations. Les capteurs `*_total_energy` s'ajoutent au **tableau de bord Énergie** (Paramètres → Tableaux de bord → Énergie).
 
 ## Fonctionnalités
 
