@@ -33,7 +33,7 @@ jobs:
     # `https://github.com/...` URL form that Forgejo accepts is rejected by
     # GitHub Actions ("Unable to resolve action https:/github.com"). A plain
     # `pip install ruff` works identically on both.
-    container: "nikolaik/python-nodejs:python3.12-nodejs20"
+    container: "nikolaik/python-nodejs:python3.13-nodejs20"
     steps:
       - uses: "actions/checkout@v4"
       - name: Install ruff
@@ -43,8 +43,8 @@ jobs:
   test-pytest:
     runs-on: "ubuntu-latest"
     # `actions/checkout` is a JS action, so the job container needs node.
-    # Use an image that ships both Python and Node instead of plain python:3.12.
-    container: "nikolaik/python-nodejs:python3.12-nodejs20"
+    # Use an image that ships both Python and Node instead of plain python:3.13.
+    container: "nikolaik/python-nodejs:python3.13-nodejs20"
     steps:
       - uses: "actions/checkout@v4"
       - name: Install test dependencies
@@ -54,8 +54,8 @@ jobs:
   type-check-mypy:
     runs-on: "ubuntu-latest"
     # `actions/checkout` is a JS action, so the job container needs node.
-    # Use an image that ships both Python and Node instead of plain python:3.12.
-    container: "nikolaik/python-nodejs:python3.12-nodejs20"
+    # Use an image that ships both Python and Node instead of plain python:3.13.
+    container: "nikolaik/python-nodejs:python3.13-nodejs20"
     steps:
       - uses: "actions/checkout@v4"
       - name: Install mypy and runtime deps
