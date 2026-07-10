@@ -114,15 +114,11 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if site_id is None:
                 continue
 
-            try:
-                site_ts = self.client.get_site_time_series(
-                    site_id, "FLOW", "NONE", None, "HOUR", 1
-                )
-            except ComwattAuthError:
-                raise
-            except Exception:  # noqa: BLE001
-                site_ts = {}
-            sites_data[site_id] = self._extract_site_metrics(site_ts)
+            site_ts = self._try_fetch(
+                self.client.get_site_time_series,
+                site_id, "FLOW", "NONE", None, "HOUR", 1,
+            )
+            sites_data[site_id] = self._extract_site_metrics(site_ts or {})
 
             for leaf in self._iter_leaf_devices(site):
                 device_id = leaf["id"]
@@ -158,6 +154,15 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             metrics[internal_key] = value
         return metrics
 
+    def _try_fetch(self, fn: Any, *args: Any) -> Any:
+        """Call `fn(*args)`; re-raise auth errors, return None on other failure."""
+        try:
+            return fn(*args)
+        except ComwattAuthError:
+            raise
+        except Exception:  # noqa: BLE001
+            return None
+
     def _iter_leaf_devices(self, site: dict[str, Any]):
         """Yield each leaf device for a site.
 
@@ -178,30 +183,19 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _fetch_device_metrics(self, device_id: str) -> dict[str, float | None]:
         """Fetch latest power reading and update the running energy total."""
-        power: float | None = None
-        try:
-            power_ts = self.client.get_device_ts_time_ago(
-                device_id, "FLOW", "NONE", "NONE", "HOUR", 1
-            )
-        except ComwattAuthError:
-            raise
-        except Exception:  # noqa: BLE001
-            pass
-        else:
-            values = power_ts.get("values") or []
-            if values:
-                power = values[-1]
+        power_ts = self._try_fetch(
+            self.client.get_device_ts_time_ago,
+            device_id, "FLOW", "NONE", "NONE", "HOUR", 1,
+        )
+        values = (power_ts or {}).get("values") or []
+        power = values[-1] if values else None
 
+        energy_ts = self._try_fetch(
+            self.client.get_device_ts_time_ago,
+            device_id, "QUANTITY", "HOUR", "NONE",
+        )
         energy: float | None = None
-        try:
-            energy_ts = self.client.get_device_ts_time_ago(
-                device_id, "QUANTITY", "HOUR", "NONE"
-            )
-        except ComwattAuthError:
-            raise
-        except Exception:  # noqa: BLE001
-            pass
-        else:
+        if energy_ts is not None:
             timestamps = energy_ts.get("timestamps") or []
             values = energy_ts.get("values") or []
             last_ts, total = self._energy_state.get(device_id, (0, 0.0))
@@ -223,11 +217,8 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _fetch_switch_state(self, device: dict[str, Any]) -> dict[str, Any]:
         """Refresh the device to read current switch on/off state."""
-        try:
-            refreshed = self.client.get_device(device["id"])
-        except ComwattAuthError:
-            raise
-        except Exception:  # noqa: BLE001
+        refreshed = self._try_fetch(self.client.get_device, device["id"])
+        if refreshed is None:
             refreshed = device
 
         is_on: bool | None = None
