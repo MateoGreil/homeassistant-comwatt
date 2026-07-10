@@ -34,9 +34,6 @@ SITE_TIME_SERIES_KEYS: dict[str, str] = {
     "injectionRates": "injection_rate",
     "withdrawalRates": "withdrawal_rate",
 }
-_RATE_KEYS = frozenset(
-    {"auto_production_rate", "auto_consumption_rate", "injection_rate", "withdrawal_rate"}
-)
 
 
 class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -158,10 +155,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if value is None:
                 metrics[internal_key] = None
                 continue
-            if internal_key in _RATE_KEYS:
-                metrics[internal_key] = value * 100
-            else:
-                metrics[internal_key] = value
+            metrics[internal_key] = value
         return metrics
 
     def _iter_leaf_devices(self, site: dict[str, Any]):

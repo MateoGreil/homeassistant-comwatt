@@ -132,7 +132,17 @@ class ComwattSiteMetricSensor(ComwattSensor):
     @property
     def native_value(self) -> float | None:
         site_data = self.coordinator.data["sites"].get(self._device["id"])
-        return site_data.get(self.entity_description.key) if site_data else None
+        if not site_data:
+            return None
+        value = site_data.get(self.entity_description.key)
+        if value is None:
+            return None
+        # Rates come from the API as 0-1 ratios; the % rendering is a sensor
+        # concern, so the scalar lives next to its PERCENTAGE unit — the only
+        # place that knows whether this is a rate.
+        if self.entity_description.native_unit_of_measurement == PERCENTAGE:
+            value *= 100
+        return value
 
     @property
     def available(self) -> bool:
