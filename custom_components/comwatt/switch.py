@@ -36,7 +36,7 @@ class ComwattSwitch(CoordinatorEntity[ComwattCoordinator], SwitchEntity):
         super().__init__(coordinator)
         self._device = device
         self._attr_unique_id = f"{device['id']}_switch"
-        self._attr_name = f"{device['name']} Switch"
+        self._attr_name = "Switch"
 
     @property
     def device_info(self) -> DeviceInfo:
