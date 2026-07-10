@@ -1,0 +1,47 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+# HACS validation (hacs/action) and hassfest (home-assistant/actions) are
+# GitHub-only and run in .github/workflows/validate.yml on the GitHub mirror.
+# This workflow runs the portable lint/test/type-check jobs on Forgejo.
+jobs:
+  lint-ruff:
+    runs-on: "ubuntu-latest"
+    # Installing ruff directly instead of using `astral-sh/ruff-action`:
+    # the action isn't mirrored on Forgejo's data.forgejo.org. A plain
+    # `pip install ruff` works just as well.
+    container: "nikolaik/python-nodejs:python3.13-nodejs20"
+    steps:
+      - uses: "actions/checkout@v4"
+      - name: Install ruff
+        run: pip install "ruff==0.15.11"
+      - name: Run ruff
+        run: ruff check .
+  test-pytest:
+    runs-on: "ubuntu-latest"
+    # `actions/checkout` is a JS action, so the job container needs node.
+    # Use an image that ships both Python and Node instead of plain python:3.13.
+    container: "nikolaik/python-nodejs:python3.13-nodejs20"
+    steps:
+      - uses: "actions/checkout@v4"
+      - name: Install test dependencies
+        run: pip install -r requirements-test.txt
+      - name: Run pytest
+        run: pytest
+  type-check-mypy:
+    runs-on: "ubuntu-latest"
+    # `actions/checkout` is a JS action, so the job container needs node.
+    # Use an image that ships both Python and Node instead of plain python:3.13.
+    container: "nikolaik/python-nodejs:python3.13-nodejs20"
+    steps:
+      - uses: "actions/checkout@v4"
+      - name: Install mypy and runtime deps
+        run: pip install mypy homeassistant comwatt-client
+      - name: Run mypy
+        run: mypy

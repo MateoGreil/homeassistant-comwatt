@@ -10,8 +10,8 @@ on:
 jobs:
   validate-hacs:
     # HACS validation queries the HACS backend for the repository on github.com,
-    # and the hassfest action is Docker-based. Both are GitHub-only; skip them
-    # when this workflow runs on a non-GitHub forge (e.g. Forgejo mirror).
+    # and the hassfest action is Docker-based. Both are GitHub-only.
+    # The portable lint/test/type-check jobs live in .forgejo/workflows/validate.yml.
     if: github.server_url == 'https://github.com'
     runs-on: "ubuntu-latest"
     steps:
@@ -26,39 +26,3 @@ jobs:
     steps:
         - uses: "actions/checkout@v4"
         - uses: "home-assistant/actions/hassfest@master"
-  lint-ruff:
-    runs-on: "ubuntu-latest"
-    # Installing ruff directly instead of using `astral-sh/ruff-action`.
-    # The action isn't mirrored on Forgejo's data.forgejo.org, and the
-    # `https://github.com/...` URL form that Forgejo accepts is rejected by
-    # GitHub Actions ("Unable to resolve action https:/github.com"). A plain
-    # `pip install ruff` works identically on both.
-    container: "nikolaik/python-nodejs:python3.13-nodejs20"
-    steps:
-      - uses: "actions/checkout@v4"
-      - name: Install ruff
-        run: pip install "ruff==0.15.11"
-      - name: Run ruff
-        run: ruff check .
-  test-pytest:
-    runs-on: "ubuntu-latest"
-    # `actions/checkout` is a JS action, so the job container needs node.
-    # Use an image that ships both Python and Node instead of plain python:3.13.
-    container: "nikolaik/python-nodejs:python3.13-nodejs20"
-    steps:
-      - uses: "actions/checkout@v4"
-      - name: Install test dependencies
-        run: pip install -r requirements-test.txt
-      - name: Run pytest
-        run: pytest
-  type-check-mypy:
-    runs-on: "ubuntu-latest"
-    # `actions/checkout` is a JS action, so the job container needs node.
-    # Use an image that ships both Python and Node instead of plain python:3.13.
-    container: "nikolaik/python-nodejs:python3.13-nodejs20"
-    steps:
-      - uses: "actions/checkout@v4"
-      - name: Install mypy and runtime deps
-        run: pip install mypy homeassistant comwatt-client
-      - name: Run mypy
-        run: mypy
