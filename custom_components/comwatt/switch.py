@@ -23,7 +23,7 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
     async_add_entities(
         ComwattSwitch(coordinator, device)
-        for _site, device in coordinator.switch_devices
+        for device in coordinator.switch_devices
     )
 
 

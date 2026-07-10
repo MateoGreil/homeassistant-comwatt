@@ -52,11 +52,11 @@ def _async_prune_stale(
     for site in coordinator.sites:
         current_unique_ids.add(f"site_{site['id']}_auto_production_rate")
         current_device_identifiers.add((DOMAIN, site["name"]))
-    for _site, device in coordinator.sensor_devices:
+    for device in coordinator.sensor_devices:
         current_unique_ids.add(f"{device['id']}_power")
         current_unique_ids.add(f"{device['id']}_total_energy")
         current_device_identifiers.add((DOMAIN, device["name"]))
-    for _site, device in coordinator.switch_devices:
+    for device in coordinator.switch_devices:
         current_unique_ids.add(f"{device['id']}_switch")
         current_device_identifiers.add((DOMAIN, device["name"]))
 

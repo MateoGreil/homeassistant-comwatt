@@ -82,7 +82,7 @@ async def async_setup_entry(
     for site in coordinator.sites:
         for description in SITE_METRICS:
             entities.append(ComwattSiteMetricSensor(coordinator, site, description))
-    for _site, device in coordinator.sensor_devices:
+    for device in coordinator.sensor_devices:
         entities.append(ComwattPowerSensor(coordinator, device))
         entities.append(ComwattEnergySensor(coordinator, device))
     async_add_entities(entities)
