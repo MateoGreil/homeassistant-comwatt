@@ -68,8 +68,8 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._energy_state: dict[str, tuple[int, float]] = {}
         # Topology discovered on the most recent refresh; used by platform setup.
         self.sites: list[dict[str, Any]] = []
-        self.sensor_devices: list[tuple[dict[str, Any], dict[str, Any]]] = []
-        self.switch_devices: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        self.sensor_devices: list[dict[str, Any]] = []
+        self.switch_devices: list[dict[str, Any]] = []
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch everything; the client re-authenticates expired sessions itself."""
@@ -106,8 +106,8 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         sites_data: dict[str, dict[str, Any]] = {}
         devices_data: dict[str, dict[str, Any]] = {}
         switches_data: dict[str, dict[str, Any]] = {}
-        sensor_devices: list[tuple[dict[str, Any], dict[str, Any]]] = []
-        switch_devices: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        sensor_devices: list[dict[str, Any]] = []
+        switch_devices: list[dict[str, Any]] = []
 
         for site in sites:
             site_id = site.get("id")
@@ -122,10 +122,10 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             for leaf in self._iter_leaf_devices(site):
                 device_id = leaf["id"]
-                sensor_devices.append((site, leaf))
+                sensor_devices.append(leaf)
                 devices_data[device_id] = self._fetch_device_metrics(device_id)
                 if self._has_switch_capacity(leaf):
-                    switch_devices.append((site, leaf))
+                    switch_devices.append(leaf)
                     switches_data[device_id] = self._fetch_switch_state(leaf)
 
         self.sites = sites
