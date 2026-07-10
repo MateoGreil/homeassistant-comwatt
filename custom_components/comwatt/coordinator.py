@@ -124,7 +124,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 continue
 
             try:
-                site_ts = self.client.get_site_networks_ts_time_ago(
+                site_ts = self.client.get_site_time_series(
                     site_id, "FLOW", "NONE", None, "HOUR", 1
                 )
             except Exception:  # noqa: BLE001

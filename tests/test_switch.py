@@ -82,7 +82,7 @@ async def test_device_without_switch_capacity_creates_no_switch(
         "values": [],
         "timestamps": [],
     }
-    mock_comwatt_client.get_site_networks_ts_time_ago.return_value = {
+    mock_comwatt_client.get_site_time_series.return_value = {
         "autoproductionRates": [],
     }
 
@@ -104,7 +104,7 @@ async def test_switchable_device_creates_switch_with_initial_state(
         "values": [],
         "timestamps": [],
     }
-    mock_comwatt_client.get_site_networks_ts_time_ago.return_value = {
+    mock_comwatt_client.get_site_time_series.return_value = {
         "autoproductionRates": [],
     }
     mock_comwatt_client.get_device.return_value = device
@@ -135,7 +135,7 @@ async def test_switch_turn_on_calls_client(
         "values": [],
         "timestamps": [],
     }
-    mock_comwatt_client.get_site_networks_ts_time_ago.return_value = {
+    mock_comwatt_client.get_site_time_series.return_value = {
         "autoproductionRates": [],
     }
     mock_comwatt_client.get_device.return_value = device
@@ -168,7 +168,7 @@ async def test_switch_turn_off_calls_client(
         "values": [],
         "timestamps": [],
     }
-    mock_comwatt_client.get_site_networks_ts_time_ago.return_value = {
+    mock_comwatt_client.get_site_time_series.return_value = {
         "autoproductionRates": [],
     }
     mock_comwatt_client.get_device.return_value = device
