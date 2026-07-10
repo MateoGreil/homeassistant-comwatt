@@ -5,7 +5,7 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-from comwatt_client import ComwattClient
+from comwatt_client import ComwattAuthError, ComwattClient
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -18,10 +18,6 @@ _LOGGER = logging.getLogger(__name__)
 
 UPDATE_INTERVAL = timedelta(minutes=2)
 SWITCH_NATURE = ("POWER_SWITCH", "RELAY")
-
-
-class _AuthError(Exception):
-    """Raised internally when credentials are rejected by the API."""
 
 
 class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -60,21 +56,13 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.switch_devices: list[tuple[dict[str, Any], dict[str, Any]]] = []
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch everything; re-auth once if the session has expired."""
+        """Fetch everything; the client re-authenticates expired sessions itself."""
         try:
             return await self.hass.async_add_executor_job(self._fetch_all)
-        except _AuthError as err:
-            # Re-auth failed outright — user intervention needed.
+        except ComwattAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
-        except Exception as first_err:  # noqa: BLE001 - upstream client raises bare Exception
-            _LOGGER.debug("First fetch failed (%s); re-authenticating and retrying", first_err)
-            try:
-                await self.hass.async_add_executor_job(self._authenticate)
-                return await self.hass.async_add_executor_job(self._fetch_all)
-            except _AuthError as auth_err:
-                raise ConfigEntryAuthFailed(str(auth_err)) from auth_err
-            except Exception as err:  # noqa: BLE001
-                raise UpdateFailed(str(err)) from err
+        except Exception as err:  # noqa: BLE001
+            raise UpdateFailed(str(err)) from err
 
     # ------------------------------------------------------------------
     # Actions triggered by entities (executor-bound)
@@ -91,24 +79,11 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Internal executor-side helpers
     # ------------------------------------------------------------------
 
-    def _authenticate(self) -> None:
-        """Authenticate the shared client; raise `_AuthError` on credential failure."""
-        try:
-            self.client.authenticate(self._username, self._password)
-        except Exception as err:  # noqa: BLE001 - upstream raises bare Exception
-            message = str(err)
-            # `ComwattClient.authenticate` raises "Authentication failed: <status>".
-            # HTTP 401/403 means the credentials are wrong; anything else is
-            # transient (network, 5xx) and should trigger a retry next cycle.
-            if "401" in message or "403" in message:
-                raise _AuthError(message) from err
-            raise
-        self._authenticated = True
-
     def _fetch_all(self) -> dict[str, Any]:
         """One full sync of the Comwatt account; called in the executor."""
         if not self._authenticated:
-            self._authenticate()
+            self.client.authenticate(self._username, self._password)
+            self._authenticated = True
 
         sites = self.client.get_sites()
 
@@ -127,6 +102,8 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 site_ts = self.client.get_site_time_series(
                     site_id, "FLOW", "NONE", None, "HOUR", 1
                 )
+            except ComwattAuthError:
+                raise
             except Exception:  # noqa: BLE001
                 rates: list[float] = []
             else:
@@ -178,6 +155,8 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             power_ts = self.client.get_device_ts_time_ago(
                 device_id, "FLOW", "NONE", "NONE", "HOUR", 1
             )
+        except ComwattAuthError:
+            raise
         except Exception:  # noqa: BLE001
             pass
         else:
@@ -190,6 +169,8 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             energy_ts = self.client.get_device_ts_time_ago(
                 device_id, "QUANTITY", "HOUR", "NONE"
             )
+        except ComwattAuthError:
+            raise
         except Exception:  # noqa: BLE001
             pass
         else:
@@ -216,6 +197,8 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Refresh the device to read current switch on/off state."""
         try:
             refreshed = self.client.get_device(device["id"])
+        except ComwattAuthError:
+            raise
         except Exception:  # noqa: BLE001
             refreshed = device
 
