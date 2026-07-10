@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResult, FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.comwatt.const import DOMAIN
@@ -19,6 +19,16 @@ _AUTH_URL = "https://energy.comwatt.com/api/v1/authent"
 
 def _auth_error(status_code: int) -> ComwattAuthError:
     return ComwattAuthError(status_code=status_code, url=_AUTH_URL)
+
+
+async def _submit_user_flow(
+    hass: HomeAssistant, user_input: dict[str, str]
+) -> FlowResult:
+    """Start the user config flow and submit `user_input`; return the result."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    return await hass.config_entries.flow.async_configure(result["flow_id"], user_input)
 
 
 async def test_form_is_shown_first(
@@ -37,12 +47,7 @@ async def test_happy_path_creates_entry(
     hass: HomeAssistant, mock_comwatt_client: MagicMock
 ) -> None:
     """Valid credentials create a config entry titled with the username."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": "user"}
-    )
-    result2 = await hass.config_entries.flow.async_configure(
-        result["flow_id"], USER_INPUT
-    )
+    result2 = await _submit_user_flow(hass, USER_INPUT)
     await hass.async_block_till_done()
 
     assert result2["type"] == FlowResultType.CREATE_ENTRY
@@ -60,12 +65,7 @@ async def test_invalid_auth_when_credentials_rejected(
     """If authenticate() rejects the credentials, show invalid_auth."""
     mock_comwatt_client.authenticate.side_effect = _auth_error(status_code)
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": "user"}
-    )
-    result2 = await hass.config_entries.flow.async_configure(
-        result["flow_id"], USER_INPUT
-    )
+    result2 = await _submit_user_flow(hass, USER_INPUT)
 
     assert result2["type"] == FlowResultType.FORM
     assert result2["errors"] == {"base": "invalid_auth"}
@@ -77,12 +77,7 @@ async def test_cannot_connect_when_authenticate_raises(
     """If authenticate() raises, show cannot_connect."""
     mock_comwatt_client.authenticate.side_effect = RuntimeError("boom")
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": "user"}
-    )
-    result2 = await hass.config_entries.flow.async_configure(
-        result["flow_id"], USER_INPUT
-    )
+    result2 = await _submit_user_flow(hass, USER_INPUT)
 
     assert result2["type"] == FlowResultType.FORM
     assert result2["errors"] == {"base": "cannot_connect"}
@@ -117,15 +112,12 @@ async def test_schema_requires_credentials(
     missing_field: str,
 ) -> None:
     """Submitting the form without username/password is rejected by the schema."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": "user"}
-    )
     partial = {k: v for k, v in USER_INPUT.items() if k != missing_field}
 
     import voluptuous as vol
 
     with pytest.raises(vol.Invalid):
-        await hass.config_entries.flow.async_configure(result["flow_id"], partial)
+        await _submit_user_flow(hass, partial)
 
 
 # ----------------------------------------------------------------------
