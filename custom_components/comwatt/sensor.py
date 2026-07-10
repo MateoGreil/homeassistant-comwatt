@@ -91,6 +91,8 @@ async def async_setup_entry(
 class ComwattSensor(CoordinatorEntity[ComwattCoordinator], SensorEntity):
     """Base class with shared device_info and coordinator wiring."""
 
+    _attr_has_entity_name = True
+
     def __init__(self, coordinator: ComwattCoordinator, device: dict[str, Any]) -> None:
         super().__init__(coordinator)
         self._device = device
@@ -127,7 +129,7 @@ class ComwattSiteMetricSensor(ComwattSensor):
         super().__init__(coordinator, site)
         self.entity_description = description
         self._attr_unique_id = f"site_{site['id']}_{description.key}"
-        self._attr_name = f"{site['name']} {description.friendly_suffix}"
+        self._attr_name = description.friendly_suffix
 
     @property
     def native_value(self) -> float | None:
@@ -159,7 +161,7 @@ class ComwattPowerSensor(ComwattSensor):
     def __init__(self, coordinator: ComwattCoordinator, device: dict[str, Any]) -> None:
         super().__init__(coordinator, device)
         self._attr_unique_id = f"{device['id']}_power"
-        self._attr_name = f"{device['name']} Power"
+        self._attr_name = "Power"
 
     @property
     def native_value(self) -> float | None:
@@ -186,7 +188,7 @@ class ComwattEnergySensor(ComwattSensor):
     def __init__(self, coordinator: ComwattCoordinator, device: dict[str, Any]) -> None:
         super().__init__(coordinator, device)
         self._attr_unique_id = f"{device['id']}_total_energy"
-        self._attr_name = f"{device['name']} Total Energy"
+        self._attr_name = "Total Energy"
 
     @property
     def native_value(self) -> float | None:

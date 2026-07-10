@@ -119,6 +119,11 @@ async def test_switchable_device_creates_switch_with_initial_state(
     ]
     assert len(switch_entries) == 1
     assert switch_entries[0].unique_id == "dev-1_switch"
+    # has_entity_name=True + suffix-only name: HA prefixes the device name, so the
+    # entity_id is `relay_switch`, not the doubled `relay_relay_switch`.
+    assert switch_entries[0].has_entity_name is True
+    assert switch_entries[0].original_name == "Switch"
+    assert switch_entries[0].entity_id == "switch.relay_switch"
 
     state = hass.states.get(switch_entries[0].entity_id)
     assert state is not None
