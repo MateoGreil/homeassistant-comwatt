@@ -12,13 +12,11 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import ComwattConfigEntry
-from .const import DOMAIN
 from .coordinator import ComwattCoordinator
+from .entity import ComwattEntity
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -88,31 +86,8 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class ComwattSensor(CoordinatorEntity[ComwattCoordinator], SensorEntity):
+class ComwattSensor(ComwattEntity, SensorEntity):
     """Base class with shared device_info and coordinator wiring."""
-
-    _attr_has_entity_name = True
-
-    def __init__(self, coordinator: ComwattCoordinator, device: dict[str, Any]) -> None:
-        super().__init__(coordinator)
-        self._device = device
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return the device info."""
-        if "deviceKind" in self._device and "code" in self._device["deviceKind"]:
-            model = self._device["deviceKind"]["code"]
-        elif "siteKind" in self._device:
-            model = self._device["siteKind"]
-        else:
-            model = None
-
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._device["name"])},
-            manufacturer="Comwatt",
-            name=self._device["name"],
-            model=model,
-        )
 
 
 class ComwattSiteMetricSensor(ComwattSensor):
