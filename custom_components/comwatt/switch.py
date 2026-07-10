@@ -5,13 +5,11 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import ComwattConfigEntry
-from .const import DOMAIN
 from .coordinator import ComwattCoordinator
+from .entity import ComwattEntity
 
 
 async def async_setup_entry(
@@ -27,31 +25,13 @@ async def async_setup_entry(
     )
 
 
-class ComwattSwitch(CoordinatorEntity[ComwattCoordinator], SwitchEntity):
+class ComwattSwitch(ComwattEntity, SwitchEntity):
     """A Comwatt device exposing a POWER_SWITCH or RELAY capacity."""
 
-    _attr_has_entity_name = True
-
     def __init__(self, coordinator: ComwattCoordinator, device: dict[str, Any]) -> None:
-        super().__init__(coordinator)
-        self._device = device
+        super().__init__(coordinator, device)
         self._attr_unique_id = f"{device['id']}_switch"
         self._attr_name = "Switch"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return the device info."""
-        if "deviceKind" in self._device and "code" in self._device["deviceKind"]:
-            model = self._device["deviceKind"]["code"]
-        else:
-            model = None
-
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._device["name"])},
-            manufacturer="Comwatt",
-            name=self._device["name"],
-            model=model,
-        )
 
     @property
     def is_on(self) -> bool | None:
