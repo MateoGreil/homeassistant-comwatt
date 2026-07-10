@@ -62,7 +62,7 @@ async def test_simple_device_creates_three_sensors(
         "values": [],
         "timestamps": [],
     }
-    mock_comwatt_client.get_site_networks_ts_time_ago.return_value = {
+    mock_comwatt_client.get_site_time_series.return_value = {
         "autoproductionRates": [],
     }
 
@@ -90,7 +90,7 @@ async def test_parent_with_children_creates_sensors_per_child(
         "values": [],
         "timestamps": [],
     }
-    mock_comwatt_client.get_site_networks_ts_time_ago.return_value = {
+    mock_comwatt_client.get_site_time_series.return_value = {
         "autoproductionRates": [],
     }
 
@@ -119,7 +119,7 @@ async def test_power_sensor_reads_latest_value(
         "values": [100, 200, 350],
         "timestamps": [1, 2, 3],
     }
-    mock_comwatt_client.get_site_networks_ts_time_ago.return_value = {
+    mock_comwatt_client.get_site_time_series.return_value = {
         "autoproductionRates": [],
     }
 
@@ -151,7 +151,7 @@ async def test_energy_sensor_accumulates_new_buckets(
         "values": [42],
         "timestamps": [1],
     }
-    mock_comwatt_client.get_site_networks_ts_time_ago.return_value = {
+    mock_comwatt_client.get_site_time_series.return_value = {
         "autoproductionRates": [],
     }
 
@@ -174,7 +174,7 @@ async def test_auto_production_rate_reads_latest_value(
     """The auto-production-rate sensor reports `autoproductionRates[-1] * 100`."""
     mock_comwatt_client.get_sites.return_value = [SITE]
     mock_comwatt_client.get_devices.return_value = []
-    mock_comwatt_client.get_site_networks_ts_time_ago.return_value = {
+    mock_comwatt_client.get_site_time_series.return_value = {
         "autoproductionRates": [0.42],
     }
 

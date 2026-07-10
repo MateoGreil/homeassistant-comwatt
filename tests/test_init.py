@@ -89,7 +89,7 @@ async def test_setup_prunes_stale_entities_and_devices(
         "values": [],
         "timestamps": [],
     }
-    mock_comwatt_client.get_site_networks_ts_time_ago.return_value = {
+    mock_comwatt_client.get_site_time_series.return_value = {
         "autoproductionRates": [],
     }
 
