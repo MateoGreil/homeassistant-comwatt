@@ -9,7 +9,6 @@ import voluptuous as vol
 from comwatt_client import ComwattAuthError, ComwattClient
 
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 
@@ -29,7 +28,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 STEP_REAUTH_DATA_SCHEMA = vol.Schema({vol.Required("password"): str})
 
 
-async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
+async def validate_input(data: dict[str, Any]) -> None:
     """Try to authenticate; raise on failure.
 
     Returns `None` on success. Raises `InvalidAuth` for bad credentials,
@@ -38,7 +37,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
     client = ComwattClient()
     try:
         await asyncio.to_thread(
-            lambda: client.authenticate(data["username"], data["password"])
+            client.authenticate, data["username"], data["password"]
         )
     except ComwattAuthError as err:
         raise InvalidAuth from err
@@ -51,22 +50,29 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    async def _validate(
+        self, data: dict[str, Any], *, log_context: str = ""
+    ) -> dict[str, str]:
+        """Run validation; return a flow `errors` dict (empty on success)."""
+        try:
+            await validate_input(data)
+        except CannotConnect:
+            return {"base": "cannot_connect"}
+        except InvalidAuth:
+            return {"base": "invalid_auth"}
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Unexpected exception%s", log_context)
+            return {"base": "unknown"}
+        return {}
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            try:
-                await validate_input(self.hass, user_input)
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except InvalidAuth:
-                errors["base"] = "invalid_auth"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Unexpected exception")
-                errors["base"] = "unknown"
-            else:
+            errors = await self._validate(user_input)
+            if not errors:
                 return self.async_create_entry(
                     title=user_input["username"], data=user_input
                 )
@@ -95,16 +101,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "username": entry.data["username"],
                 "password": user_input["password"],
             }
-            try:
-                await validate_input(self.hass, new_data)
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except InvalidAuth:
-                errors["base"] = "invalid_auth"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Unexpected exception during reauth")
-                errors["base"] = "unknown"
-            else:
+            errors = await self._validate(new_data, log_context=" during reauth")
+            if not errors:
                 # Writes the new data to the entry, reloads it, and ends the
                 # flow with the `reauth_successful` abort reason.
                 return self.async_update_reload_and_abort(entry, data=new_data)
