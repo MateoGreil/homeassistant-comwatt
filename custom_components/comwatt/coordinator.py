@@ -19,6 +19,25 @@ _LOGGER = logging.getLogger(__name__)
 UPDATE_INTERVAL = timedelta(minutes=2)
 SWITCH_NATURE = ("POWER_SWITCH", "RELAY")
 
+# API key in `get_site_time_series()["<key>"]` → our internal key.
+# Rate fields are 0-1 ratios (multiplied by 100 downstream to render as %);
+# the rest are Wh deltas for the last hour bucket.
+SITE_TIME_SERIES_KEYS: dict[str, str] = {
+    "productions": "production",
+    "consumptions": "consumption",
+    "injections": "injection",
+    "withdrawals": "withdrawal",
+    "charges": "charge",
+    "discharges": "discharge",
+    "autoproductionRates": "auto_production_rate",
+    "autoconsumptionRates": "auto_consumption_rate",
+    "injectionRates": "injection_rate",
+    "withdrawalRates": "withdrawal_rate",
+}
+_RATE_KEYS = frozenset(
+    {"auto_production_rate", "auto_consumption_rate", "injection_rate", "withdrawal_rate"}
+)
+
 
 class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Fetches all Comwatt data used by the integration in one periodic cycle.
@@ -105,12 +124,8 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except ComwattAuthError:
                 raise
             except Exception:  # noqa: BLE001
-                rates: list[float] = []
-            else:
-                rates = site_ts.get("autoproductionRates") or []
-            sites_data[site_id] = {
-                "auto_production_rate": rates[-1] * 100 if rates else None,
-            }
+                site_ts = {}
+            sites_data[site_id] = self._extract_site_metrics(site_ts)
 
             for leaf in self._iter_leaf_devices(site):
                 device_id = leaf["id"]
@@ -129,6 +144,25 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "devices": devices_data,
             "switches": switches_data,
         }
+
+    @staticmethod
+    def _extract_site_metrics(site_ts: dict[str, Any]) -> dict[str, float | None]:
+        """Pull the latest bucket for every known site metric."""
+        metrics: dict[str, float | None] = {}
+        for api_key, internal_key in SITE_TIME_SERIES_KEYS.items():
+            series = site_ts.get(api_key) or []
+            if not series:
+                metrics[internal_key] = None
+                continue
+            value = series[-1]
+            if value is None:
+                metrics[internal_key] = None
+                continue
+            if internal_key in _RATE_KEYS:
+                metrics[internal_key] = value * 100
+            else:
+                metrics[internal_key] = value
+        return metrics
 
     def _iter_leaf_devices(self, site: dict[str, Any]):
         """Yield each leaf device for a site.
