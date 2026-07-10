@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-from comwatt_client import ComwattClient
+from comwatt_client import ComwattAuthError, ComwattClient
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
@@ -35,21 +35,15 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
     Returns `None` on success. Raises `InvalidAuth` for bad credentials,
     `CannotConnect` for network / backend failures.
     """
-    cwt_session = None
     client = ComwattClient()
     try:
         await asyncio.to_thread(
             lambda: client.authenticate(data["username"], data["password"])
         )
-        for cookie in client.session.cookies:
-            if cookie.name == "cwt_session":
-                cwt_session = cookie
-                break
-    except Exception as err:  # noqa: BLE001 - upstream raises bare Exception
+    except ComwattAuthError as err:
+        raise InvalidAuth from err
+    except Exception as err:
         raise CannotConnect from err
-
-    if not cwt_session:
-        raise InvalidAuth
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):

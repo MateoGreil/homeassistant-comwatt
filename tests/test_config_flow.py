@@ -10,9 +10,15 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.comwatt.const import DOMAIN
 
-from .conftest import _FakeCookie
+from comwatt_client import ComwattAPIError, ComwattAuthError
 
 USER_INPUT = {"username": "user@example.com", "password": "secret"}
+
+_AUTH_URL = "https://energy.comwatt.com/api/v1/authent"
+
+
+def _auth_error(status_code: int) -> ComwattAuthError:
+    return ComwattAuthError(status_code=status_code, url=_AUTH_URL)
 
 
 async def test_form_is_shown_first(
@@ -47,11 +53,12 @@ async def test_happy_path_creates_entry(
     )
 
 
-async def test_invalid_auth_when_session_cookie_missing(
-    hass: HomeAssistant, mock_comwatt_client: MagicMock
+@pytest.mark.parametrize("status_code", [401, 403])
+async def test_invalid_auth_when_credentials_rejected(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock, status_code: int
 ) -> None:
-    """If authenticate() succeeds but no cwt_session cookie is set, show invalid_auth."""
-    mock_comwatt_client.session.cookies = [_FakeCookie("other", "x")]
+    """If authenticate() rejects the credentials, show invalid_auth."""
+    mock_comwatt_client.authenticate.side_effect = _auth_error(status_code)
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}
@@ -69,6 +76,25 @@ async def test_cannot_connect_when_authenticate_raises(
 ) -> None:
     """If authenticate() raises, show cannot_connect."""
     mock_comwatt_client.authenticate.side_effect = RuntimeError("boom")
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"], USER_INPUT
+    )
+
+    assert result2["type"] == FlowResultType.FORM
+    assert result2["errors"] == {"base": "cannot_connect"}
+
+
+async def test_cannot_connect_on_server_error(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A 5xx from the Comwatt API shows cannot_connect, not invalid_auth."""
+    mock_comwatt_client.authenticate.side_effect = ComwattAPIError(
+        status_code=503, url=_AUTH_URL
+    )
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}
@@ -154,9 +180,7 @@ async def test_reauth_invalid_auth_keeps_form_open(
 ) -> None:
     """If the new password is rejected by the backend, the form stays open
     with `invalid_auth` and the entry's data is not touched."""
-    # Simulate the same invalid-auth condition as the initial flow: a
-    # successful authenticate() but no cwt_session cookie.
-    mock_comwatt_client.session.cookies = [_FakeCookie("other", "x")]
+    mock_comwatt_client.authenticate.side_effect = _auth_error(401)
 
     entry = _add_entry(hass)
     init = await entry.start_reauth_flow(hass)

@@ -17,34 +17,9 @@ def auto_enable_custom_integrations(
     yield
 
 
-class _FakeCookie:
-    """Minimal stand-in for a requests cookie used by the config flow."""
-
-    def __init__(self, name: str, value: str) -> None:
-        self.name = name
-        self.value = value
-
-
-class _FakeCookieJar(list):
-    """A list of cookies that mimics the subset of `RequestsCookieJar` the
-    integration uses: iteration, `get_dict()`, and `update()`."""
-
-    def get_dict(self) -> dict[str, str]:
-        return {c.name: c.value for c in self}
-
-    def update(self, other: object) -> None:  # type: ignore[override]
-        if isinstance(other, dict):
-            for name, value in other.items():
-                self.append(_FakeCookie(name, value))
-            return
-        for cookie in other:  # type: ignore[union-attr]
-            self.append(cookie)
-
-
 def _make_fake_client() -> MagicMock:
     """Build a ComwattClient mock with sensible defaults."""
     instance = MagicMock()
-    instance.session.cookies = _FakeCookieJar([_FakeCookie("cwt_session", "fake")])
     instance.get_sites.return_value = []
     instance.get_devices.return_value = []
     instance.authenticate.return_value = None
