@@ -9,18 +9,10 @@ from typing import Any
 
 from comwatt_client import ComwattAuthError, ComwattClient
 
-from homeassistant.components.recorder.models import StatisticMeanType
-from homeassistant.components.recorder.statistics import (
-    StatisticData,
-    StatisticMetaData,
-    async_add_external_statistics,
-)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.util import slugify
-from homeassistant.util.unit_conversion import EnergyConverter
 
 from .const import DOMAIN
 
@@ -58,17 +50,6 @@ class _EnergyState:
     last_fetched_at: float | None = None  # monotonic clock of the last successful fetch
     last_bucket_ts: datetime | None = None  # highest API timestamp folded in, as UTC datetime
     total_wh: float = 0.0  # cumulative Wh since this coordinator was instantiated
-
-
-@dataclass
-class _NewEnergyBucket:
-    """One hourly API bucket that hasn't been pushed to statistics yet."""
-
-    device_id: str
-    device_name: str
-    bucket_ts: datetime
-    delta_wh: float  # Wh consumed in this hour — the per-period `state` for statistics
-    cumulative_wh: float  # running total — the `sum` for statistics
 
 
 def _parse_bucket_ts(ts: Any) -> datetime | None:
@@ -138,9 +119,6 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._authenticated = False
         # Per-device accumulated energy state.
         self._energy_state: dict[str, _EnergyState] = {}
-        # New hourly buckets staged by _fetch_all (executor) for the
-        # event-loop-side statistics push; replaced on every refresh.
-        self._pending_energy_buckets: list[_NewEnergyBucket] = []
         # Topology discovered on the most recent refresh; used by platform setup.
         self.sites: list[dict[str, Any]] = []
         self.sensor_devices: list[dict[str, Any]] = []
@@ -155,14 +133,6 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:  # noqa: BLE001
             raise UpdateFailed(str(err)) from err
 
-        # Push any new hourly buckets to long-term statistics at their real
-        # timestamps, not "now", so the Energy dashboard attributes them to
-        # the correct hour (closes issues #5 and #42). _fetch_all stages them
-        # on self._pending_energy_buckets; drain them here so a subsequent
-        # refresh can't re-push stale buckets.
-        buckets = self._pending_energy_buckets
-        self._pending_energy_buckets = []
-        self._async_push_energy_statistics(buckets)
         return data
 
     # ------------------------------------------------------------------
@@ -175,51 +145,6 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.client.switch_capacity, capacity_id, on
         )
         await self.async_request_refresh()
-
-    # ------------------------------------------------------------------
-    # Statistics emission (called on the event loop after each refresh)
-    # ------------------------------------------------------------------
-
-    def _async_push_energy_statistics(
-        self, buckets: list[_NewEnergyBucket]
-    ) -> None:
-        """Forward new hourly energy buckets to the recorder.
-
-        Uses external statistics (source = `comwatt`) so it coexists with
-        whatever the `TOTAL_INCREASING` sensor's own state tracking produces,
-        rather than overwriting it. Users who want energy attributed to the
-        real hour can add the `comwatt:<device_id>_total_energy` statistic to
-        the Energy dashboard; existing users keep their current sensor-based
-        dashboard working unchanged.
-        """
-        if not buckets or "recorder" not in self.hass.config.components:
-            # No data to push, or HA is running without the recorder (rare,
-            # but we shouldn't crash the poll).
-            return
-        by_device: dict[str, list[_NewEnergyBucket]] = {}
-        for bucket in buckets:
-            by_device.setdefault(bucket.device_id, []).append(bucket)
-        for device_id, device_buckets in by_device.items():
-            name = device_buckets[0].device_name
-            statistic_id = f"{DOMAIN}:{slugify(str(device_id))}_total_energy"
-            metadata = StatisticMetaData(
-                mean_type=StatisticMeanType.NONE,
-                has_sum=True,
-                name=f"{name} Total Energy",
-                source=DOMAIN,
-                statistic_id=statistic_id,
-                unit_class=EnergyConverter.UNIT_CLASS,
-                unit_of_measurement="Wh",
-            )
-            stats = [
-                StatisticData(
-                    start=b.bucket_ts.replace(minute=0, second=0, microsecond=0),
-                    state=b.delta_wh,
-                    sum=b.cumulative_wh,
-                )
-                for b in device_buckets
-            ]
-            async_add_external_statistics(self.hass, metadata, stats)
 
     # ------------------------------------------------------------------
     # Internal executor-side helpers
@@ -238,7 +163,6 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         switches_data: dict[str, dict[str, Any]] = {}
         sensor_devices: list[dict[str, Any]] = []
         switch_devices: list[dict[str, Any]] = []
-        new_energy_buckets: list[_NewEnergyBucket] = []
 
         for site in sites:
             site_id = site.get("id")
@@ -254,9 +178,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for leaf in self._iter_leaf_devices(site):
                 device_id = leaf["id"]
                 sensor_devices.append(leaf)
-                metrics, device_new_buckets = self._fetch_device_metrics(leaf)
-                devices_data[device_id] = metrics
-                new_energy_buckets.extend(device_new_buckets)
+                devices_data[device_id] = self._fetch_device_metrics(leaf)
                 if self._find_switch_capacity(leaf) is not None:
                     switch_devices.append(leaf)
                     switches_data[device_id] = self._fetch_switch_state(leaf)
@@ -264,7 +186,6 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.sites = sites
         self.sensor_devices = sensor_devices
         self.switch_devices = switch_devices
-        self._pending_energy_buckets = new_energy_buckets
 
         return {
             "sites": sites_data,
@@ -315,14 +236,12 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 yield device
 
-    def _fetch_device_metrics(
-        self, device: dict[str, Any]
-    ) -> tuple[dict[str, float | None], list[_NewEnergyBucket]]:
-        """Fetch latest power + (optionally) new hourly energy buckets.
+    def _fetch_device_metrics(self, device: dict[str, Any]) -> dict[str, float | None]:
+        """Fetch latest power reading and update the running energy total.
 
-        Returns the `{"power": ..., "energy": ...}` payload for `coordinator.data`
-        **and** a list of any new hourly buckets that should be pushed to
-        long-term statistics.
+        The QUANTITY/HOUR call is skipped while the cached total is younger than
+        `ENERGY_MIN_FETCH_INTERVAL_S`, since the API only publishes a new hourly
+        bucket once per hour (issue #3).
         """
         device_id = device["id"]
         power_ts = self._try_fetch(
@@ -334,7 +253,6 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         state = self._energy_state.setdefault(device_id, _EnergyState())
         energy: float | None = state.total_wh if state.last_fetched_at is not None else None
-        new_buckets: list[_NewEnergyBucket] = []
 
         now = time.monotonic()
         # Skip the QUANTITY call if we already fetched recently — the API
@@ -365,19 +283,10 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         continue
                     state.total_wh += val
                     state.last_bucket_ts = bucket_dt
-                    new_buckets.append(
-                        _NewEnergyBucket(
-                            device_id=device_id,
-                            device_name=device.get("name", device_id),
-                            bucket_ts=bucket_dt,
-                            delta_wh=val,
-                            cumulative_wh=state.total_wh,
-                        )
-                    )
                 state.last_fetched_at = now
                 energy = state.total_wh
 
-        return {"power": power, "energy": energy}, new_buckets
+        return {"power": power, "energy": energy}
 
     @staticmethod
     def _find_switch_capacity(device: dict[str, Any]) -> dict[str, Any] | None:
