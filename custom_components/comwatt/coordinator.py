@@ -124,7 +124,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 device_id = leaf["id"]
                 sensor_devices.append(leaf)
                 devices_data[device_id] = self._fetch_device_metrics(device_id)
-                if self._has_switch_capacity(leaf):
+                if self._find_switch_capacity(leaf) is not None:
                     switch_devices.append(leaf)
                     switches_data[device_id] = self._fetch_switch_state(leaf)
 
@@ -208,12 +208,14 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return {"power": power, "energy": energy}
 
     @staticmethod
-    def _has_switch_capacity(device: dict[str, Any]) -> bool:
+    def _find_switch_capacity(device: dict[str, Any]) -> dict[str, Any] | None:
+        """Return the first switch-capacity object (nature in SWITCH_NATURE)."""
         for feature in device.get("features") or []:
             for capacity in feature.get("capacities") or []:
-                if (capacity.get("capacity") or {}).get("nature") in SWITCH_NATURE:
-                    return True
-        return False
+                cap = capacity.get("capacity") or {}
+                if cap.get("nature") in SWITCH_NATURE:
+                    return cap
+        return None
 
     def _fetch_switch_state(self, device: dict[str, Any]) -> dict[str, Any]:
         """Refresh the device to read current switch on/off state."""
@@ -221,13 +223,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if refreshed is None:
             refreshed = device
 
-        is_on: bool | None = None
-        capacity_id: str | None = None
-        for feature in refreshed.get("features") or []:
-            for capacity in feature.get("capacities") or []:
-                cap = capacity.get("capacity") or {}
-                if cap.get("nature") in SWITCH_NATURE:
-                    is_on = cap.get("enable")
-                    capacity_id = cap.get("id")
-                    break
-        return {"is_on": is_on, "capacity_id": capacity_id}
+        cap = self._find_switch_capacity(refreshed)
+        if cap is None:
+            return {"is_on": None, "capacity_id": None}
+        return {"is_on": cap.get("enable"), "capacity_id": cap.get("id")}
