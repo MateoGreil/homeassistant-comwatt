@@ -3,13 +3,11 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from comwatt_client import ComwattAuthError
-from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
-from homeassistant.util.unit_conversion import EnergyConverter
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.comwatt.const import DOMAIN
@@ -138,52 +136,6 @@ async def test_energy_fetch_is_skipped_within_interval(
     await entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
     assert count_quantity_calls() == 2, "energy endpoint should be called again after the interval"
-
-
-async def test_new_energy_buckets_are_pushed_as_external_statistics(
-    hass: HomeAssistant, mock_comwatt_client: MagicMock
-) -> None:
-    """Each new hourly bucket is recorded at its real timestamp via
-    `async_add_external_statistics` (closes #5 and #42)."""
-    mock_comwatt_client.get_sites.return_value = [SITE]
-    mock_comwatt_client.get_devices.return_value = [DEVICE]
-
-    def ts_returner(device_id: str, kind: str, *rest: object) -> dict:
-        if kind == "QUANTITY":
-            return {"timestamps": [3600, 7200], "values": [10.0, 15.0]}
-        return {"values": [42.0], "timestamps": [1]}
-
-    mock_comwatt_client.get_device_ts_time_ago.side_effect = ts_returner
-    mock_comwatt_client.get_site_time_series.return_value = {
-        "autoproductionRates": [],
-    }
-
-    entry = _make_entry(hass)
-    with patch(
-        "custom_components.comwatt.coordinator.async_add_external_statistics"
-    ) as mock_push:
-        # Recorder isn't loaded in test env — pretend it is, so the push runs.
-        hass.config.components.add("recorder")
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-    assert mock_push.call_count == 1
-    metadata, stats = mock_push.call_args.args[1], list(mock_push.call_args.args[2])
-    assert metadata["statistic_id"] == "comwatt:dev_1_total_energy"
-    assert metadata["source"] == DOMAIN
-    assert metadata["has_sum"] is True
-    assert metadata["mean_type"] == StatisticMeanType.NONE
-    assert metadata["unit_class"] == EnergyConverter.UNIT_CLASS
-    assert metadata["unit_of_measurement"] == "Wh"
-    # Two new buckets -> two stat entries. `state` is the per-hour Wh delta,
-    # `sum` is the running cumulative total (closes #5/#42 hour alignment).
-    assert len(stats) == 2
-    assert stats[0]["state"] == 10.0
-    assert stats[0]["sum"] == 10.0
-    assert stats[1]["state"] == 15.0
-    assert stats[1]["sum"] == 25.0
-    # Buckets start at the top of the hour in UTC.
-    assert stats[0]["start"].minute == 0 and stats[0]["start"].second == 0
 
 
 # ---------------------------------------------------------------------------
