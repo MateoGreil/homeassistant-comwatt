@@ -10,7 +10,11 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.comwatt.const import DOMAIN
-from custom_components.comwatt.stream import ComwattStreamManager, _apply_switch_updates
+from custom_components.comwatt.stream import (
+    ComwattStreamManager,
+    _apply_power_updates,
+    _apply_switch_updates,
+)
 
 ENTRY_DATA = {"username": "user@example.com", "password": "secret"}
 SWITCH_CAPACITY_ID = "AZUREIOT-co.10.instances.0.switch.0.data"
@@ -31,13 +35,14 @@ def _measurement(
     measure_kind: str,
     value_bool: bool | None,
     value: str = "true",
+    value_float: float | None = None,
 ) -> Measurement:
     return Measurement(
         gateway_uid="g",
         capacity_id=capacity_id,
         measure_kind=measure_kind,
         value=value,
-        value_float=None,
+        value_float=value_float,
         value_bool=value_bool,
     )
 
@@ -128,7 +133,10 @@ def test_process_batch_notifies_coordinator_only_on_change(
 ) -> None:
     coordinator = MagicMock()
     coordinator.capacity_map = _switch_capacity_map()
-    coordinator.data = {"switches": _switches_data(is_on=False)}
+    coordinator.data = {
+        "switches": _switches_data(is_on=False),
+        "devices": {},
+    }
     coordinator.async_update_listeners = MagicMock()
 
     manager = ComwattStreamManager(MagicMock(), coordinator, "user", "pass")
@@ -250,6 +258,265 @@ async def test_consumer_updates_switch_state_and_teardown_cleans_up(
     await hass.async_block_till_done()
 
     assert coordinator.data["switches"][SWITCH_DEVICE_ID]["is_on"] is True
+
+    await manager.async_stop()
+    assert manager._consumer_task.done()
+    assert all(task.done() for task in manager._stream_tasks)
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+def test_apply_power_updates_sums_multi_instance_device_power() -> None:
+    capacity_map = {
+        "co.1.inst.0.sensor.0.data": ("23593", "CLAMP", True),
+        "co.1.inst.1.sensor.1.data": ("23593", "CLAMP", True),
+        "co.1.inst.2.sensor.2.data": ("23593", "CLAMP", True),
+    }
+    devices_data = {"23593": {"power": None, "energy": None}}
+    batch = [
+        _measurement(
+            capacity_id="co.1.inst.0.sensor.0.data",
+            measure_kind="FLOW",
+            value_bool=None,
+            value="629.0",
+            value_float=629.0,
+        ),
+        _measurement(
+            capacity_id="co.1.inst.1.sensor.1.data",
+            measure_kind="FLOW",
+            value_bool=None,
+            value="622.0",
+            value_float=622.0,
+        ),
+        _measurement(
+            capacity_id="co.1.inst.2.sensor.2.data",
+            measure_kind="FLOW",
+            value_bool=None,
+            value="604.0",
+            value_float=604.0,
+        ),
+    ]
+    assert _apply_power_updates(batch, capacity_map, devices_data) is True
+    assert devices_data["23593"]["power"] == 1855.0
+
+
+def test_apply_power_updates_writes_single_instance_device_power() -> None:
+    capacity_map = {"co.2.inst.3.sensor.3.data": ("23600", "CLAMP", False)}
+    devices_data = {"23600": {"power": None, "energy": None}}
+    batch = [
+        _measurement(
+            capacity_id="co.2.inst.3.sensor.3.data",
+            measure_kind="FLOW",
+            value_bool=None,
+            value="161.0",
+            value_float=161.0,
+        )
+    ]
+    assert _apply_power_updates(batch, capacity_map, devices_data) is True
+    assert devices_data["23600"]["power"] == 161.0
+
+
+def test_apply_power_updates_ignores_state_and_quantity_measurements() -> None:
+    capacity_map = {
+        SWITCH_CAPACITY_ID: (SWITCH_DEVICE_ID, "POWER_SWITCH", False),
+        "co.2.inst.3.sensor.3.data": ("23600", "CLAMP", False),
+    }
+    devices_data = {
+        SWITCH_DEVICE_ID: {"is_on": False, "capacity_id": "133095"},
+        "23600": {"power": None, "energy": None},
+    }
+    batch = [
+        _measurement(
+            capacity_id=SWITCH_CAPACITY_ID,
+            measure_kind="STATE",
+            value_bool=True,
+        ),
+        _measurement(
+            capacity_id="co.2.inst.3.sensor.3.data",
+            measure_kind="QUANTITY",
+            value_bool=None,
+            value="999.0",
+            value_float=999.0,
+        ),
+    ]
+    assert _apply_power_updates(batch, capacity_map, devices_data) is False
+    assert devices_data["23600"]["power"] is None
+
+
+def test_apply_power_updates_ignores_unmapped_and_null_value_float() -> None:
+    capacity_map = {"co.2.inst.3.sensor.3.data": ("23600", "CLAMP", False)}
+    devices_data = {"23600": {"power": None, "energy": None}}
+
+    unmapped = [
+        _measurement(
+            capacity_id="co.99.inst.0.sensor.0.data",
+            measure_kind="FLOW",
+            value_bool=None,
+            value="42.0",
+            value_float=42.0,
+        )
+    ]
+    assert _apply_power_updates(unmapped, capacity_map, devices_data) is False
+    assert devices_data["23600"]["power"] is None
+
+    null_value = [
+        _measurement(
+            capacity_id="co.2.inst.3.sensor.3.data",
+            measure_kind="FLOW",
+            value_bool=None,
+            value="",
+            value_float=None,
+        )
+    ]
+    assert _apply_power_updates(null_value, capacity_map, devices_data) is False
+    assert devices_data["23600"]["power"] is None
+
+
+def test_process_batch_notifies_on_power_or_switch_change(
+    mock_comwatt_client: MagicMock,
+) -> None:
+    coordinator = MagicMock()
+    coordinator.capacity_map = {
+        SWITCH_CAPACITY_ID: (SWITCH_DEVICE_ID, "POWER_SWITCH", False),
+        "co.2.inst.3.sensor.3.data": ("23600", "CLAMP", False),
+    }
+    coordinator.data = {
+        "switches": {SWITCH_DEVICE_ID: {"is_on": False, "capacity_id": "x"}},
+        "devices": {"23600": {"power": None, "energy": None}},
+    }
+    coordinator.async_update_listeners = MagicMock()
+
+    manager = ComwattStreamManager(MagicMock(), coordinator, "user", "pass")
+
+    manager._process_batch(
+        [
+            _measurement(
+                capacity_id="co.2.inst.3.sensor.3.data",
+                measure_kind="FLOW",
+                value_bool=None,
+                value="161.0",
+                value_float=161.0,
+            )
+        ]
+    )
+    assert coordinator.async_update_listeners.call_count == 1
+    assert coordinator.data["devices"]["23600"]["power"] == 161.0
+
+    manager._process_batch(
+        [
+            _measurement(
+                capacity_id=SWITCH_CAPACITY_ID,
+                measure_kind="STATE",
+                value_bool=True,
+            )
+        ]
+    )
+    assert coordinator.async_update_listeners.call_count == 2
+    assert coordinator.data["switches"][SWITCH_DEVICE_ID]["is_on"] is True
+
+    manager._process_batch(
+        [
+            _measurement(
+                capacity_id="co.99.inst.0.sensor.0.data",
+                measure_kind="FLOW",
+                value_bool=None,
+                value="42.0",
+                value_float=42.0,
+            )
+        ]
+    )
+    assert coordinator.async_update_listeners.call_count == 2
+
+
+async def test_consumer_updates_device_power_and_teardown_cleans_up(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    stream_site = {
+        "id": "site-1",
+        "name": "Home",
+        "siteKind": "RESIDENTIAL",
+        "siteUid": "site-uid-1",
+    }
+    solar_device = {
+        "id": "23593",
+        "name": "Solar Inverter",
+        "deviceKind": {"code": "SOLAR"},
+    }
+    mock_comwatt_client.get_sites.return_value = [stream_site]
+    mock_comwatt_client.get_devices.return_value = [solar_device]
+    mock_comwatt_client.get_device.return_value = solar_device
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.return_value = {
+        "values": [],
+        "timestamps": [],
+    }
+    mock_comwatt_client.get_connected_objects.return_value = [
+        {
+            "capacities": [
+                {
+                    "capacityId": "co.1.inst.0.sensor.0.data",
+                    "deviceId": 23593,
+                    "nature": "CLAMP",
+                    "production": True,
+                },
+                {
+                    "capacityId": "co.1.inst.1.sensor.1.data",
+                    "deviceId": 23593,
+                    "nature": "CLAMP",
+                    "production": True,
+                },
+                {
+                    "capacityId": "co.1.inst.2.sensor.2.data",
+                    "deviceId": 23593,
+                    "nature": "CLAMP",
+                    "production": True,
+                },
+            ]
+        }
+    ]
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = entry.runtime_data
+    manager = coordinator.stream_manager
+    assert manager is not None
+    assert coordinator.data["devices"]["23593"]["power"] is None
+
+    manager._queue.put_nowait(
+        _measurement(
+            capacity_id="co.1.inst.0.sensor.0.data",
+            measure_kind="FLOW",
+            value_bool=None,
+            value="629.0",
+            value_float=629.0,
+        )
+    )
+    manager._queue.put_nowait(
+        _measurement(
+            capacity_id="co.1.inst.1.sensor.1.data",
+            measure_kind="FLOW",
+            value_bool=None,
+            value="622.0",
+            value_float=622.0,
+        )
+    )
+    manager._queue.put_nowait(
+        _measurement(
+            capacity_id="co.1.inst.2.sensor.2.data",
+            measure_kind="FLOW",
+            value_bool=None,
+            value="604.0",
+            value_float=604.0,
+        )
+    )
+    await hass.async_block_till_done()
+    await asyncio.sleep(0.1)
+    await hass.async_block_till_done()
+
+    assert coordinator.data["devices"]["23593"]["power"] == 1855.0
 
     await manager.async_stop()
     assert manager._consumer_task.done()

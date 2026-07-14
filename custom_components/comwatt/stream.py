@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+POWER_SENSOR_NATURES = ("CLAMP", "POWER_SENSOR")
+
 
 def _apply_switch_updates(
     batch: list[Any],
@@ -43,6 +45,44 @@ def _apply_switch_updates(
         if sw is None:
             continue
         sw["is_on"] = msg.value_bool
+        changed = True
+    return changed
+
+
+def _apply_power_updates(
+    batch: list[Any],
+    capacity_map: dict[str, tuple[str, str, bool]],
+    devices_data: dict[str, dict[str, Any]],
+) -> bool:
+    """Sum FLOW power readings per device into ``devices_data``; return whether anything changed.
+
+    Polyphase devices push all their instances in the same burst, so the per-
+    batch accumulator yields the device's true instantaneous power rather than
+    a partial value overwritten by a later instance in the same batch. Non-FLOW
+    measurements, unmapped capacityIds, non-power natures, null ``value_float``
+    and devices without a sensor entity are ignored.
+    """
+    device_powers: dict[str, float] = {}
+    for msg in batch:
+        if not isinstance(msg, Measurement):
+            continue
+        if msg.measure_kind != "FLOW":
+            continue
+        if msg.value_float is None:
+            continue
+        route = capacity_map.get(msg.capacity_id)
+        if route is None:
+            continue
+        device_id, nature, _production = route
+        if nature not in POWER_SENSOR_NATURES:
+            continue
+        device_powers[device_id] = device_powers.get(device_id, 0.0) + msg.value_float
+    changed = False
+    for device_id, power in device_powers.items():
+        dev = devices_data.get(device_id)
+        if dev is None:
+            continue
+        dev["power"] = power
         changed = True
     return changed
 
@@ -141,12 +181,19 @@ class ComwattStreamManager:
                 _LOGGER.exception("failed to process stream batch")
 
     def _process_batch(self, batch: list[Any]) -> None:
-        """Apply a drained batch to the coordinator, notifying on switch changes."""
-        if _apply_switch_updates(
+        """Apply a drained batch to the coordinator, notifying on any change."""
+        changed = False
+        changed |= _apply_switch_updates(
             batch,
             self._coordinator.capacity_map,
             self._coordinator.data["switches"],
-        ):
+        )
+        changed |= _apply_power_updates(
+            batch,
+            self._coordinator.capacity_map,
+            self._coordinator.data["devices"],
+        )
+        if changed:
             self._coordinator.async_update_listeners()
 
     async def async_stop(self) -> None:
