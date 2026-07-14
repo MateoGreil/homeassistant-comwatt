@@ -123,6 +123,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.sites: list[dict[str, Any]] = []
         self.sensor_devices: list[dict[str, Any]] = []
         self.switch_devices: list[dict[str, Any]] = []
+        self.capacity_map: dict[str, tuple[str, str, bool]] = {}
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch everything; the client re-authenticates expired sessions itself."""
@@ -163,6 +164,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         switches_data: dict[str, dict[str, Any]] = {}
         sensor_devices: list[dict[str, Any]] = []
         switch_devices: list[dict[str, Any]] = []
+        self.capacity_map = {}
 
         for site in sites:
             site_id = site.get("id")
@@ -174,6 +176,9 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 site_id, "FLOW", "NONE", None, "HOUR", 1,
             )
             sites_data[site_id] = self._extract_site_metrics(site_ts or {})
+
+            connected_objects = self._try_fetch(self.client.get_connected_objects, site_id)
+            self._fold_capacity_map(connected_objects or [])
 
             for leaf in self._iter_leaf_devices(site):
                 device_id = leaf["id"]
@@ -192,6 +197,22 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "devices": devices_data,
             "switches": switches_data,
         }
+
+    def _fold_capacity_map(self, connected_objects: list[dict[str, Any]]) -> None:
+        """Add every mappable capacity from `connected_objects` to `self.capacity_map`."""
+        for connected_object in connected_objects:
+            for cap in connected_object.get("capacities") or []:
+                capacity_id = cap.get("capacityId")
+                if not capacity_id:
+                    continue
+                device_id = cap.get("deviceId")
+                if not device_id:
+                    continue
+                self.capacity_map[capacity_id] = (
+                    str(device_id),
+                    cap["nature"],
+                    bool(cap.get("production", False)),
+                )
 
     @staticmethod
     def _extract_site_metrics(site_ts: dict[str, Any]) -> dict[str, float | None]:
