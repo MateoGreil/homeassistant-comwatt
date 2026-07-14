@@ -20,7 +20,7 @@ from custom_components.comwatt.stream import (
 
 ENTRY_DATA = {"username": "user@example.com", "password": "secret"}
 SWITCH_CAPACITY_ID = "AZUREIOT-co.10.instances.0.switch.0.data"
-SWITCH_DEVICE_ID = "129443"
+SWITCH_DEVICE_ID = 129443
 
 
 def _make_entry(hass: HomeAssistant) -> MockConfigEntry:
@@ -49,7 +49,7 @@ def _measurement(
     )
 
 
-def _switch_capacity_map() -> dict[str, tuple[str, str, bool]]:
+def _switch_capacity_map() -> dict[str, tuple[Any, str, bool]]:
     return {SWITCH_CAPACITY_ID: (SWITCH_DEVICE_ID, "POWER_SWITCH", False)}
 
 
@@ -451,7 +451,7 @@ async def test_consumer_updates_device_power_and_teardown_cleans_up(
         "siteUid": "site-uid-1",
     }
     solar_device = {
-        "id": "23593",
+        "id": 23593,
         "name": "Solar Inverter",
         "deviceKind": {"code": "SOLAR"},
     }
@@ -495,7 +495,7 @@ async def test_consumer_updates_device_power_and_teardown_cleans_up(
     coordinator = entry.runtime_data
     manager = coordinator.stream_manager
     assert manager is not None
-    assert coordinator.data["devices"]["23593"]["power"] is None
+    assert coordinator.data["devices"][23593]["power"] is None
 
     manager._queue.put_nowait(
         _measurement(
@@ -528,7 +528,7 @@ async def test_consumer_updates_device_power_and_teardown_cleans_up(
     await asyncio.sleep(0.1)
     await hass.async_block_till_done()
 
-    assert coordinator.data["devices"]["23593"]["power"] == 1855.0
+    assert coordinator.data["devices"][23593]["power"] == 1855.0
 
     await manager.async_stop()
     assert manager._consumer_task.done()
@@ -688,7 +688,7 @@ async def test_consumer_accumulates_live_energy_via_trapezoidal(
         "siteUid": "site-uid-1",
     }
     solar_device = {
-        "id": "23593",
+        "id": 23593,
         "name": "Solar Inverter",
         "deviceKind": {"code": "SOLAR"},
     }
@@ -737,7 +737,7 @@ async def test_consumer_accumulates_live_energy_via_trapezoidal(
         )
         for _ in range(20):
             await hass.async_block_till_done()
-            if coordinator.data["devices"]["23593"]["power"] == 100.0:
+            if coordinator.data["devices"][23593]["power"] == 100.0:
                 break
             await asyncio.sleep(0.05)
 
@@ -752,17 +752,76 @@ async def test_consumer_accumulates_live_energy_via_trapezoidal(
         )
         for _ in range(20):
             await hass.async_block_till_done()
-            if coordinator.data["devices"]["23593"]["power"] == 200.0:
+            if coordinator.data["devices"][23593]["power"] == 200.0:
                 break
             await asyncio.sleep(0.05)
 
-    assert coordinator.data["devices"]["23593"]["energy"] == 1.5
+    assert coordinator.data["devices"][23593]["energy"] == 1.5
 
     await manager.async_stop()
     assert all(task.done() for task in manager._stream_tasks)
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
+
+
+async def test_stream_updates_device_with_integer_id(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    stream_site = {
+        "id": "site-1",
+        "name": "Home",
+        "siteKind": "RESIDENTIAL",
+        "siteUid": "u1",
+    }
+    freezer_device = {
+        "id": 23600,
+        "name": "Freezer",
+        "deviceKind": {"code": "FREEZER"},
+    }
+    capacity_id = "AZUREIOT-co.2.instances.3.sensor.3.data"
+    mock_comwatt_client.get_sites.return_value = [stream_site]
+    mock_comwatt_client.get_devices.return_value = [freezer_device]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.return_value = {
+        "values": [],
+        "timestamps": [],
+    }
+    mock_comwatt_client.get_connected_objects.return_value = [
+        {
+            "capacities": [
+                {
+                    "capacityId": capacity_id,
+                    "deviceId": 23600,
+                    "nature": "CLAMP",
+                    "production": False,
+                }
+            ]
+        }
+    ]
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = entry.runtime_data
+    manager = coordinator.stream_manager
+    assert manager is not None
+
+    manager._queue.put_nowait(
+        _measurement(
+            capacity_id=capacity_id,
+            measure_kind="FLOW",
+            value_bool=None,
+            value="161.0",
+            value_float=161.0,
+        )
+    )
+    await hass.async_block_till_done()
+    await asyncio.sleep(0.1)
+    await hass.async_block_till_done()
+
+    assert coordinator.data["devices"][23600]["power"] == 161.0
 
 
 def test_integrate_live_energy_skips_delta_on_non_positive_dt(

@@ -225,10 +225,10 @@ async def test_capacity_map_built_from_connected_objects(
     await hass.async_block_till_done()
 
     capacity_map = entry.runtime_data.capacity_map
-    assert capacity_map["AZUREIOT-co.2.instances.3.sensor.3.data"] == ("23600", "CLAMP", False)
-    assert capacity_map["AZUREIOT-co.2.instances.0.sensor.0.withdrawal.data"] == ("23599", "CLAMP", False)
-    assert capacity_map["AZUREIOT-co.1.instances.3.sensor.3.battery_charge.data"] == ("147223", "CLAMP", False)
-    assert capacity_map["AZUREIOT-co.10.instances.0.switch.0.data"] == ("129443", "POWER_SWITCH", False)
+    assert capacity_map["AZUREIOT-co.2.instances.3.sensor.3.data"] == (23600, "CLAMP", False)
+    assert capacity_map["AZUREIOT-co.2.instances.0.sensor.0.withdrawal.data"] == (23599, "CLAMP", False)
+    assert capacity_map["AZUREIOT-co.1.instances.3.sensor.3.battery_charge.data"] == (147223, "CLAMP", False)
+    assert capacity_map["AZUREIOT-co.10.instances.0.switch.0.data"] == (129443, "POWER_SWITCH", False)
     assert "AZUREIOT-co.2.instances.9.sensor.9.data" not in capacity_map
     assert len(capacity_map) == 5
 

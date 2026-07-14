@@ -130,7 +130,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.sites: list[dict[str, Any]] = []
         self.sensor_devices: list[dict[str, Any]] = []
         self.switch_devices: list[dict[str, Any]] = []
-        self.capacity_map: dict[str, tuple[str, str, bool]] = {}
+        self.capacity_map: dict[str, tuple[Any, str, bool]] = {}
         self.stream_manager: ComwattStreamManager | None = None
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -220,7 +220,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if nature is None:
                     continue
                 self.capacity_map[capacity_id] = (
-                    str(device_id),
+                    device_id,
                     nature,
                     bool(cap.get("production", False)),
                 )
