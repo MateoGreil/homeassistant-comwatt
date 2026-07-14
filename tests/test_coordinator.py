@@ -138,6 +138,80 @@ async def test_energy_fetch_is_skipped_within_interval(
     assert count_quantity_calls() == 2, "energy endpoint should be called again after the interval"
 
 
+async def test_capacity_map_built_from_connected_objects(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """The coordinator folds every connected object's capacities into a
+    capacityId -> (deviceId, nature, production) map, skipping capacities
+    with a null deviceId.
+    """
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.return_value = {
+        "autoproductionRates": [],
+    }
+    connected_object_a = {
+        "capacities": [
+            {
+                "capacityId": "AZUREIOT-co.2.instances.3.sensor.3.data",
+                "deviceId": 23600,
+                "nature": "CLAMP",
+                "production": False,
+            },
+            {
+                "capacityId": "AZUREIOT-co.2.instances.0.sensor.0.withdrawal.data",
+                "deviceId": 23599,
+                "nature": "CLAMP",
+                "production": False,
+            },
+            {
+                "capacityId": "AZUREIOT-co.2.instances.0.sensor.0.injection.data",
+                "deviceId": 23598,
+                "nature": "CLAMP",
+                "production": False,
+            },
+            {
+                "capacityId": "AZUREIOT-co.2.instances.9.sensor.9.data",
+                "deviceId": None,
+                "nature": "CLAMP",
+                "production": False,
+            },
+        ]
+    }
+    connected_object_b = {
+        "capacities": [
+            {
+                "capacityId": "AZUREIOT-co.1.instances.3.sensor.3.battery_charge.data",
+                "deviceId": 147223,
+                "nature": "CLAMP",
+                "production": False,
+            },
+            {
+                "capacityId": "AZUREIOT-co.10.instances.0.switch.0.data",
+                "deviceId": 129443,
+                "nature": "POWER_SWITCH",
+                "production": False,
+            },
+        ]
+    }
+    mock_comwatt_client.get_connected_objects.return_value = [
+        connected_object_a,
+        connected_object_b,
+    ]
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    capacity_map = entry.runtime_data.capacity_map
+    assert capacity_map["AZUREIOT-co.2.instances.3.sensor.3.data"] == ("23600", "CLAMP", False)
+    assert capacity_map["AZUREIOT-co.2.instances.0.sensor.0.withdrawal.data"] == ("23599", "CLAMP", False)
+    assert capacity_map["AZUREIOT-co.1.instances.3.sensor.3.battery_charge.data"] == ("147223", "CLAMP", False)
+    assert capacity_map["AZUREIOT-co.10.instances.0.switch.0.data"] == ("129443", "POWER_SWITCH", False)
+    assert "AZUREIOT-co.2.instances.9.sensor.9.data" not in capacity_map
+    assert len(capacity_map) == 5
+
+
 # ---------------------------------------------------------------------------
 # _parse_bucket_ts — boundary parser for the Comwatt time-series endpoint.
 # Documents every shape we have seen the API actually return, so future drift

@@ -22,6 +22,7 @@ def _make_fake_client() -> MagicMock:
     instance = MagicMock()
     instance.get_sites.return_value = []
     instance.get_devices.return_value = []
+    instance.get_connected_objects.return_value = []
     instance.authenticate.return_value = None
     return instance
 
