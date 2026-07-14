@@ -129,7 +129,7 @@ def test_process_batch_notifies_coordinator_only_on_change(
     coordinator = MagicMock()
     coordinator.capacity_map = _switch_capacity_map()
     coordinator.data = {"switches": _switches_data(is_on=False)}
-    coordinator.async_set_updated_data = MagicMock()
+    coordinator.async_update_listeners = MagicMock()
 
     manager = ComwattStreamManager(MagicMock(), coordinator, "user", "pass")
 
@@ -140,7 +140,7 @@ def test_process_batch_notifies_coordinator_only_on_change(
             )
         ]
     )
-    assert coordinator.async_set_updated_data.call_count == 1
+    assert coordinator.async_update_listeners.call_count == 1
     assert coordinator.data["switches"][SWITCH_DEVICE_ID]["is_on"] is True
 
     manager._process_batch(
@@ -153,7 +153,40 @@ def test_process_batch_notifies_coordinator_only_on_change(
             )
         ]
     )
-    assert coordinator.async_set_updated_data.call_count == 1
+    assert coordinator.async_update_listeners.call_count == 1
+
+
+async def test_consume_swallows_batch_errors_and_keeps_running(
+    mock_comwatt_client: MagicMock,
+) -> None:
+    coordinator = MagicMock()
+    coordinator.capacity_map = {}
+    coordinator.data = {"switches": {}}
+
+    manager = ComwattStreamManager(MagicMock(), coordinator, "user", "pass")
+    manager._queue = asyncio.Queue()
+
+    calls: list[int] = []
+
+    def fake_process_batch(batch: list[Any]) -> None:
+        calls.append(len(batch))
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+
+    manager._process_batch = fake_process_batch
+
+    manager._consumer_task = asyncio.create_task(manager._consume())
+
+    manager._queue.put_nowait("batch-1")
+    await asyncio.sleep(0.05)
+    manager._queue.put_nowait("batch-2")
+    await asyncio.sleep(0.05)
+
+    assert manager._consumer_task.done() is False
+    assert len(calls) == 2
+
+    manager._consumer_task.cancel()
+    await asyncio.gather(manager._consumer_task, return_exceptions=True)
 
 
 async def test_consumer_updates_switch_state_and_teardown_cleans_up(

@@ -128,12 +128,17 @@ class ComwattStreamManager:
         while True:
             first = await self._queue.get()
             batch = [first]
-            while True:
-                try:
-                    batch.append(self._queue.get_nowait())
-                except asyncio.QueueEmpty:
-                    break
-            self._process_batch(batch)
+            try:
+                while True:
+                    try:
+                        batch.append(self._queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+                self._process_batch(batch)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _LOGGER.exception("failed to process stream batch")
 
     def _process_batch(self, batch: list[Any]) -> None:
         """Apply a drained batch to the coordinator, notifying on switch changes."""
@@ -142,7 +147,7 @@ class ComwattStreamManager:
             self._coordinator.capacity_map,
             self._coordinator.data["switches"],
         ):
-            self._coordinator.async_set_updated_data(self._coordinator.data)
+            self._coordinator.async_update_listeners()
 
     async def async_stop(self) -> None:
         """Cancel all stream/consumer tasks and close the dedicated client.
