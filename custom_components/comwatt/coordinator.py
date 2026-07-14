@@ -216,9 +216,12 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 device_id = cap.get("deviceId")
                 if not device_id:
                     continue
+                nature = cap.get("nature")
+                if nature is None:
+                    continue
                 self.capacity_map[capacity_id] = (
                     str(device_id),
-                    cap["nature"],
+                    nature,
                     bool(cap.get("production", False)),
                 )
 
@@ -337,6 +340,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         now = monotonic()
         if state.last_fetched_at is None or now - state.last_fetched_at >= ENERGY_MIN_FETCH_INTERVAL_S:
+            initial_live = live_total
             energy_ts = self._try_fetch(
                 self.client.get_device_ts_time_ago,
                 device_id, "QUANTITY", "HOUR", "NONE",
@@ -371,8 +375,13 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if live_total is None:
                     energy = state.total_wh
                 else:
-                    state.live_total_wh = live_total
-                    energy = live_total
+                    state.live_total_wh += live_total - initial_live
+                    energy = state.live_total_wh
+                    if state.last_bucket_ts is not None:
+                        hwm_hour = state.last_bucket_ts.replace(minute=0, second=0, microsecond=0)
+                        for stale_hour in list(state.live_by_hour):
+                            if stale_hour < hwm_hour:
+                                state.live_by_hour.pop(stale_hour, None)
 
         return {"power": power, "energy": energy}
 
