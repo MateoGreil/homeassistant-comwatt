@@ -24,20 +24,30 @@ def _make_fake_client() -> MagicMock:
     instance.get_devices.return_value = []
     instance.get_connected_objects.return_value = []
     instance.authenticate.return_value = None
+    instance.stream_measurements.return_value = iter([])
     return instance
 
 
 @pytest.fixture
 def mock_comwatt_client() -> Generator[MagicMock, None, None]:
-    """Patch ComwattClient at the two sites the integration imports it.
+    """Patch ComwattClient at every site the integration imports it.
 
-    The coordinator owns the long-lived client; the config flow still creates
-    a one-shot client for credential validation.
+    The coordinator owns the long-lived polling client and the config flow
+    creates a one-shot client for credential validation; both share `instance`
+    so tests assert on a single mock. The stream manager owns a *dedicated*
+    client (mirroring production, where it never shares the coordinator's
+    `requests.Session`), so it gets its own `stream_instance` whose
+    `stream_measurements` returns an empty iterator and whose `authenticate`
+    is a no-op. This keeps the coordinator's `authenticate.call_count` free
+    of the stream's own authentication.
     """
     instance = _make_fake_client()
+    stream_instance = _make_fake_client()
     with patch(
         "custom_components.comwatt.coordinator.ComwattClient", return_value=instance
     ), patch(
         "custom_components.comwatt.config_flow.ComwattClient", return_value=instance
+    ), patch(
+        "custom_components.comwatt.stream.ComwattClient", return_value=stream_instance
     ):
         yield instance

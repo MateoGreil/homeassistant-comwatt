@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from comwatt_client import ComwattAuthError, ComwattClient
 
@@ -15,6 +15,9 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
+
+if TYPE_CHECKING:
+    from .stream import ComwattStreamManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -124,6 +127,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.sensor_devices: list[dict[str, Any]] = []
         self.switch_devices: list[dict[str, Any]] = []
         self.capacity_map: dict[str, tuple[str, str, bool]] = {}
+        self.stream_manager: ComwattStreamManager | None = None
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch everything; the client re-authenticates expired sessions itself."""

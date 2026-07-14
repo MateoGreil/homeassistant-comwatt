@@ -8,6 +8,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import DOMAIN
 from .coordinator import ComwattCoordinator
+from .stream import ComwattStreamManager
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.SWITCH]
 
@@ -25,11 +26,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ComwattConfigEntry) -> b
     entry.runtime_data = coordinator
     _async_prune_stale(hass, entry, coordinator)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    coordinator.stream_manager = ComwattStreamManager(
+        hass, coordinator, entry.data["username"], entry.data["password"]
+    )
+    await coordinator.stream_manager.async_start()
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ComwattConfigEntry) -> bool:
     """Unload a config entry."""
+    coordinator = entry.runtime_data
+    if coordinator.stream_manager is not None:
+        await coordinator.stream_manager.async_stop()
+        coordinator.stream_manager = None
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
