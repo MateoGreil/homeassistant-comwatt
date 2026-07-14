@@ -49,18 +49,17 @@ def _apply_switch_updates(
     return changed
 
 
-def _apply_power_updates(
+def _compute_device_powers(
     batch: list[Any],
     capacity_map: dict[str, tuple[str, str, bool]],
-    devices_data: dict[str, dict[str, Any]],
-) -> bool:
-    """Sum FLOW power readings per device into ``devices_data``; return whether anything changed.
+) -> dict[str, float]:
+    """Return {device_id: summed_power_w} for FLOW power measurements in batch.
 
     Polyphase devices push all their instances in the same burst, so the per-
     batch accumulator yields the device's true instantaneous power rather than
     a partial value overwritten by a later instance in the same batch. Non-FLOW
-    measurements, unmapped capacityIds, non-power natures, null ``value_float``
-    and devices without a sensor entity are ignored.
+    measurements, unmapped capacityIds, non-power natures and null
+    ``value_float`` are ignored.
     """
     device_powers: dict[str, float] = {}
     for msg in batch:
@@ -77,6 +76,20 @@ def _apply_power_updates(
         if nature not in POWER_SENSOR_NATURES:
             continue
         device_powers[device_id] = device_powers.get(device_id, 0.0) + msg.value_float
+    return device_powers
+
+
+def _apply_power_updates(
+    device_powers: dict[str, float],
+    devices_data: dict[str, dict[str, Any]],
+) -> bool:
+    """Write summed powers into ``devices_data``; return whether anything changed.
+
+    Devices without a sensor entity are ignored. Returns True whenever a power
+    value is written, so the caller treats every non-empty burst as a change
+    (the live energy total accumulates on every burst even if the power value
+    is identical to the previous one).
+    """
     changed = False
     for device_id, power in device_powers.items():
         dev = devices_data.get(device_id)
@@ -182,16 +195,13 @@ class ComwattStreamManager:
 
     def _process_batch(self, batch: list[Any]) -> None:
         """Apply a drained batch to the coordinator, notifying on any change."""
-        changed = False
+        device_powers = _compute_device_powers(batch, self._coordinator.capacity_map)
+        changed = _apply_power_updates(device_powers, self._coordinator.data["devices"])
+        self._coordinator.integrate_live_energy(device_powers)
         changed |= _apply_switch_updates(
             batch,
             self._coordinator.capacity_map,
             self._coordinator.data["switches"],
-        )
-        changed |= _apply_power_updates(
-            batch,
-            self._coordinator.capacity_map,
-            self._coordinator.data["devices"],
         )
         if changed:
             self._coordinator.async_update_listeners()

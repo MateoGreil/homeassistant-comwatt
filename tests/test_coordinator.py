@@ -212,6 +212,45 @@ async def test_capacity_map_built_from_connected_objects(
     assert len(capacity_map) == 5
 
 
+async def test_fetch_device_metrics_returns_live_total_when_stream_active(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Once the stream has taken over, _fetch_device_metrics returns the live
+    total and skips the QUANTITY/HOUR fetch so the poll and stream don't
+    double-count the same energy."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.return_value = {
+        "values": [42.0],
+        "timestamps": [1],
+    }
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+
+    def count_quantity_calls() -> int:
+        return sum(
+            1
+            for call in mock_comwatt_client.get_device_ts_time_ago.call_args_list
+            if len(call.args) >= 2 and call.args[1] == "QUANTITY"
+        )
+
+    coord._energy_state[DEVICE["id"]].live_total_wh = 1234.0
+    calls_before = count_quantity_calls()
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+    assert result == {"power": 42.0, "energy": 1234.0}
+    assert count_quantity_calls() == calls_before
+
+    coord._energy_state[DEVICE["id"]].live_total_wh = None
+    coord._energy_state[DEVICE["id"]].last_fetched_at = time.monotonic() - 60 * 60
+    await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+    assert count_quantity_calls() == calls_before + 1
+
+
 # ---------------------------------------------------------------------------
 # _parse_bucket_ts — boundary parser for the Comwatt time-series endpoint.
 # Documents every shape we have seen the API actually return, so future drift

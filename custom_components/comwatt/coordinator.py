@@ -1,10 +1,10 @@
 """DataUpdateCoordinator for the Comwatt integration."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import logging
-import time
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 from comwatt_client import ComwattAuthError, ComwattClient
@@ -53,6 +53,10 @@ class _EnergyState:
     last_fetched_at: float | None = None  # monotonic clock of the last successful fetch
     last_bucket_ts: datetime | None = None  # highest API timestamp folded in, as UTC datetime
     total_wh: float = 0.0  # cumulative Wh since this coordinator was instantiated
+    last_power_w: float | None = None
+    last_power_t: float | None = None
+    live_total_wh: float | None = None
+    live_by_hour: dict[datetime, float] = field(default_factory=dict)
 
 
 def _parse_bucket_ts(ts: Any) -> datetime | None:
@@ -261,6 +265,34 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 yield device
 
+    def integrate_live_energy(self, device_powers: dict[str, float]) -> None:
+        """Accumulate trapezoidal ∫W·dt into each device's live energy total.
+
+        Called by the stream manager after it computes per-device power for a
+        burst. Seeds `live_total_wh` from the poll's `total_wh` on the first
+        burst, then accumulates. Also writes the live total into
+        `self.data["devices"][id]["energy"]` and buckets the delta by UTC hour
+        for Slice 5 reconciliation.
+        """
+        for device_id, power_w in device_powers.items():
+            state = self._energy_state.setdefault(device_id, _EnergyState())
+            now_mono = monotonic()
+            now_utc = datetime.now(UTC)
+            if state.live_total_wh is None:
+                state.live_total_wh = state.total_wh
+            if state.last_power_w is not None and state.last_power_t is not None:
+                dt_h = (now_mono - state.last_power_t) / 3600.0
+                if dt_h > 0:
+                    delta_wh = (power_w + state.last_power_w) / 2.0 * dt_h
+                    state.live_total_wh += delta_wh
+                    hour = now_utc.replace(minute=0, second=0, microsecond=0)
+                    state.live_by_hour[hour] = state.live_by_hour.get(hour, 0.0) + delta_wh
+            state.last_power_w = power_w
+            state.last_power_t = now_mono
+            dev = self.data.get("devices", {}).get(device_id)
+            if dev is not None:
+                dev["energy"] = state.live_total_wh
+
     def _fetch_device_metrics(self, device: dict[str, Any]) -> dict[str, float | None]:
         """Fetch latest power reading and update the running energy total.
 
@@ -277,9 +309,11 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         power = values[-1] if values else None
 
         state = self._energy_state.setdefault(device_id, _EnergyState())
+        if state.live_total_wh is not None:
+            return {"power": power, "energy": state.live_total_wh}
         energy: float | None = state.total_wh if state.last_fetched_at is not None else None
 
-        now = time.monotonic()
+        now = monotonic()
         # Skip the QUANTITY call if we already fetched recently — the API
         # only changes hourly and each call is cached in `total_wh`.
         if state.last_fetched_at is None or now - state.last_fetched_at >= ENERGY_MIN_FETCH_INTERVAL_S:
