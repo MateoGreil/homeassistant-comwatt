@@ -3,17 +3,19 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from comwatt_client import Measurement
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.comwatt.const import DOMAIN
+from custom_components.comwatt.coordinator import ComwattCoordinator, _EnergyState
 from custom_components.comwatt.stream import (
     ComwattStreamManager,
     _apply_power_updates,
     _apply_switch_updates,
+    _compute_device_powers,
 )
 
 ENTRY_DATA = {"username": "user@example.com", "password": "secret"}
@@ -297,7 +299,9 @@ def test_apply_power_updates_sums_multi_instance_device_power() -> None:
             value_float=604.0,
         ),
     ]
-    assert _apply_power_updates(batch, capacity_map, devices_data) is True
+    device_powers = _compute_device_powers(batch, capacity_map)
+    assert device_powers == {"23593": 1855.0}
+    assert _apply_power_updates(device_powers, devices_data) is True
     assert devices_data["23593"]["power"] == 1855.0
 
 
@@ -313,7 +317,9 @@ def test_apply_power_updates_writes_single_instance_device_power() -> None:
             value_float=161.0,
         )
     ]
-    assert _apply_power_updates(batch, capacity_map, devices_data) is True
+    device_powers = _compute_device_powers(batch, capacity_map)
+    assert device_powers == {"23600": 161.0}
+    assert _apply_power_updates(device_powers, devices_data) is True
     assert devices_data["23600"]["power"] == 161.0
 
 
@@ -340,7 +346,9 @@ def test_apply_power_updates_ignores_state_and_quantity_measurements() -> None:
             value_float=999.0,
         ),
     ]
-    assert _apply_power_updates(batch, capacity_map, devices_data) is False
+    device_powers = _compute_device_powers(batch, capacity_map)
+    assert device_powers == {}
+    assert _apply_power_updates(device_powers, devices_data) is False
     assert devices_data["23600"]["power"] is None
 
 
@@ -357,7 +365,9 @@ def test_apply_power_updates_ignores_unmapped_and_null_value_float() -> None:
             value_float=42.0,
         )
     ]
-    assert _apply_power_updates(unmapped, capacity_map, devices_data) is False
+    device_powers = _compute_device_powers(unmapped, capacity_map)
+    assert device_powers == {}
+    assert _apply_power_updates(device_powers, devices_data) is False
     assert devices_data["23600"]["power"] is None
 
     null_value = [
@@ -369,7 +379,9 @@ def test_apply_power_updates_ignores_unmapped_and_null_value_float() -> None:
             value_float=None,
         )
     ]
-    assert _apply_power_updates(null_value, capacity_map, devices_data) is False
+    device_powers = _compute_device_powers(null_value, capacity_map)
+    assert device_powers == {}
+    assert _apply_power_updates(device_powers, devices_data) is False
     assert devices_data["23600"]["power"] is None
 
 
@@ -520,6 +532,233 @@ async def test_consumer_updates_device_power_and_teardown_cleans_up(
 
     await manager.async_stop()
     assert manager._consumer_task.done()
+    assert all(task.done() for task in manager._stream_tasks)
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+def test_compute_device_powers_sums_multi_instance_flow() -> None:
+    capacity_map = {
+        "co.1.inst.0.sensor.0.data": ("23593", "CLAMP", True),
+        "co.1.inst.1.sensor.1.data": ("23593", "CLAMP", True),
+        "co.1.inst.2.sensor.2.data": ("23593", "CLAMP", True),
+    }
+    batch = [
+        _measurement(
+            capacity_id="co.1.inst.0.sensor.0.data",
+            measure_kind="FLOW",
+            value_bool=None,
+            value="629.0",
+            value_float=629.0,
+        ),
+        _measurement(
+            capacity_id="co.1.inst.1.sensor.1.data",
+            measure_kind="FLOW",
+            value_bool=None,
+            value="622.0",
+            value_float=622.0,
+        ),
+        _measurement(
+            capacity_id="co.1.inst.2.sensor.2.data",
+            measure_kind="FLOW",
+            value_bool=None,
+            value="604.0",
+            value_float=604.0,
+        ),
+    ]
+    assert _compute_device_powers(batch, capacity_map) == {"23593": 1855.0}
+
+
+def test_integrate_live_energy_accumulates_trapezoidal(
+    mock_comwatt_client: MagicMock,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title=ENTRY_DATA["username"]
+    )
+    coord = ComwattCoordinator(MagicMock(), entry)
+    coord.data = {"devices": {"23593": {"power": None, "energy": None}}}
+    coord._energy_state = {}
+
+    scripted = iter([1000.0, 1036.0])
+    with patch(
+        "custom_components.comwatt.coordinator.monotonic",
+        side_effect=lambda: next(scripted, 1036.0),
+    ):
+        coord.integrate_live_energy({"23593": 100.0})
+        state = coord._energy_state["23593"]
+        assert state.live_total_wh == 0.0
+        assert state.last_power_w == 100.0
+        assert coord.data["devices"]["23593"]["energy"] == 0.0
+
+        coord.integrate_live_energy({"23593": 200.0})
+
+    state = coord._energy_state["23593"]
+    assert state.live_total_wh == 1.5
+    assert state.last_power_w == 200.0
+    assert coord.data["devices"]["23593"]["energy"] == 1.5
+    assert len(state.live_by_hour) == 1
+    hour = next(iter(state.live_by_hour))
+    assert hour.minute == 0
+    assert hour.second == 0
+    assert hour.microsecond == 0
+    assert state.live_by_hour[hour] == 1.5
+
+
+def test_integrate_live_energy_seeds_from_poll_total(
+    mock_comwatt_client: MagicMock,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title=ENTRY_DATA["username"]
+    )
+    coord = ComwattCoordinator(MagicMock(), entry)
+    coord.data = {"devices": {"23593": {"power": None, "energy": None}}}
+    coord._energy_state = {"23593": _EnergyState(total_wh=500.0)}
+
+    scripted = iter([1000.0, 1036.0])
+    with patch(
+        "custom_components.comwatt.coordinator.monotonic",
+        side_effect=lambda: next(scripted, 1036.0),
+    ):
+        coord.integrate_live_energy({"23593": 100.0})
+        state = coord._energy_state["23593"]
+        assert state.live_total_wh == 500.0
+        assert state.last_power_w == 100.0
+
+        coord.integrate_live_energy({"23593": 200.0})
+
+    state = coord._energy_state["23593"]
+    assert state.live_total_wh == 501.5
+    assert coord.data["devices"]["23593"]["energy"] == 501.5
+
+
+def test_process_batch_integrates_and_notifies_only_on_change(
+    mock_comwatt_client: MagicMock,
+) -> None:
+    coordinator = MagicMock()
+    coordinator.capacity_map = {"co.2.inst.3.sensor.3.data": ("23600", "CLAMP", False)}
+    coordinator.data = {
+        "devices": {"23600": {"power": None, "energy": None}},
+        "switches": {},
+    }
+    coordinator.integrate_live_energy = MagicMock()
+    coordinator.async_update_listeners = MagicMock()
+
+    manager = ComwattStreamManager(MagicMock(), coordinator, "user", "pass")
+
+    manager._process_batch(
+        [
+            _measurement(
+                capacity_id="co.2.inst.3.sensor.3.data",
+                measure_kind="FLOW",
+                value_bool=None,
+                value="161.0",
+                value_float=161.0,
+            )
+        ]
+    )
+    coordinator.integrate_live_energy.assert_called_once_with({"23600": 161.0})
+    coordinator.async_update_listeners.assert_called_once()
+
+    coordinator.integrate_live_energy.reset_mock()
+    coordinator.async_update_listeners.reset_mock()
+
+    manager._process_batch(
+        [
+            _measurement(
+                capacity_id="co.99.inst.0.sensor.0.data",
+                measure_kind="FLOW",
+                value_bool=None,
+                value="42.0",
+                value_float=42.0,
+            )
+        ]
+    )
+    coordinator.integrate_live_energy.assert_called_once_with({})
+    coordinator.async_update_listeners.assert_not_called()
+
+
+async def test_consumer_accumulates_live_energy_via_trapezoidal(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    stream_site = {
+        "id": "site-1",
+        "name": "Home",
+        "siteKind": "RESIDENTIAL",
+        "siteUid": "site-uid-1",
+    }
+    solar_device = {
+        "id": "23593",
+        "name": "Solar Inverter",
+        "deviceKind": {"code": "SOLAR"},
+    }
+    mock_comwatt_client.get_sites.return_value = [stream_site]
+    mock_comwatt_client.get_devices.return_value = [solar_device]
+    mock_comwatt_client.get_device.return_value = solar_device
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.return_value = {
+        "values": [],
+        "timestamps": [],
+    }
+    mock_comwatt_client.get_connected_objects.return_value = [
+        {
+            "capacities": [
+                {
+                    "capacityId": "co.1.inst.0.sensor.0.data",
+                    "deviceId": 23593,
+                    "nature": "CLAMP",
+                    "production": True,
+                }
+            ]
+        }
+    ]
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = entry.runtime_data
+    manager = coordinator.stream_manager
+    assert manager is not None
+
+    scripted = iter([1000.0, 1036.0])
+    with patch(
+        "custom_components.comwatt.coordinator.monotonic",
+        side_effect=lambda: next(scripted, 1036.0),
+    ):
+        manager._queue.put_nowait(
+            _measurement(
+                capacity_id="co.1.inst.0.sensor.0.data",
+                measure_kind="FLOW",
+                value_bool=None,
+                value="100.0",
+                value_float=100.0,
+            )
+        )
+        for _ in range(20):
+            await hass.async_block_till_done()
+            if coordinator.data["devices"]["23593"]["power"] == 100.0:
+                break
+            await asyncio.sleep(0.05)
+
+        manager._queue.put_nowait(
+            _measurement(
+                capacity_id="co.1.inst.0.sensor.0.data",
+                measure_kind="FLOW",
+                value_bool=None,
+                value="200.0",
+                value_float=200.0,
+            )
+        )
+        for _ in range(20):
+            await hass.async_block_till_done()
+            if coordinator.data["devices"]["23593"]["power"] == 200.0:
+                break
+            await asyncio.sleep(0.05)
+
+    assert coordinator.data["devices"]["23593"]["energy"] == 1.5
+
+    await manager.async_stop()
     assert all(task.done() for task in manager._stream_tasks)
 
     assert await hass.config_entries.async_unload(entry.entry_id)
