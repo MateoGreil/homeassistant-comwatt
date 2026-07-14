@@ -763,3 +763,31 @@ async def test_consumer_accumulates_live_energy_via_trapezoidal(
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
+
+
+def test_integrate_live_energy_skips_delta_on_non_positive_dt(
+    mock_comwatt_client: MagicMock,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title=ENTRY_DATA["username"]
+    )
+    coord = ComwattCoordinator(MagicMock(), entry)
+    coord.data = {"devices": {"23600": {"power": None, "energy": None}}}
+    coord._energy_state = {}
+
+    scripted = iter([1000.0, 1000.0])
+    with patch(
+        "custom_components.comwatt.coordinator.monotonic",
+        side_effect=lambda: next(scripted, 1000.0),
+    ):
+        coord.integrate_live_energy({"23600": 100.0})
+        state = coord._energy_state["23600"]
+        assert state.live_total_wh == 0.0
+        assert state.last_power_w == 100.0
+
+        coord.integrate_live_energy({"23600": 200.0})
+
+    assert state.live_total_wh == 0.0
+    assert state.last_power_w == 200.0
+    assert state.last_power_t == 1000.0
+    assert state.live_by_hour == {}

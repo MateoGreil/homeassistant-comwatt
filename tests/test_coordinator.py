@@ -421,7 +421,7 @@ async def test_reconcile_across_multiple_new_buckets(
     result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
 
     assert state.live_total_wh == 80.0
-    assert state.live_by_hour[datetime(2026, 7, 14, 10, 0, tzinfo=UTC)] == 500.0
+    assert datetime(2026, 7, 14, 10, 0, tzinfo=UTC) not in state.live_by_hour
     assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 190.0
     assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
     assert result == {"power": 42.0, "energy": 80.0}
@@ -561,3 +561,105 @@ def test_parse_bucket_ts_unsupported_types_return_none() -> None:
     assert _parse_bucket_ts(False) is None
     assert _parse_bucket_ts([1719504000]) is None
     assert _parse_bucket_ts({"ts": 1719504000}) is None
+
+
+async def test_reconcile_preserves_concurrent_stream_delta(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [500.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 100.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 510.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    def concurrent_quantity_side_effect(device_id: str, kind: str, *rest: object) -> dict[str, Any]:
+        if kind == "QUANTITY":
+            state.live_total_wh += 30.0
+            return {"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [500.0]}
+        return {"values": [42.0], "timestamps": [1]}
+
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = concurrent_quantity_side_effect
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 120.0
+    assert result == {"power": 42.0, "energy": 120.0}
+
+
+async def test_reconcile_prunes_stale_live_by_hour(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [500.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 1000.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 10, 0, tzinfo=UTC)
+    state.live_by_hour = {
+        datetime(2026, 7, 14, 8, 0, tzinfo=UTC): 100.0,
+        datetime(2026, 7, 14, 9, 0, tzinfo=UTC): 200.0,
+        datetime(2026, 7, 14, 10, 0, tzinfo=UTC): 300.0,
+        datetime(2026, 7, 14, 12, 0, tzinfo=UTC): 50.0,
+    }
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert set(state.live_by_hour.keys()) == {
+        datetime(2026, 7, 14, 11, 0, tzinfo=UTC),
+        datetime(2026, 7, 14, 12, 0, tzinfo=UTC),
+    }
+
+
+async def test_capacity_map_skips_capacity_without_nature(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_connected_objects.return_value = [
+        {
+            "capacities": [
+                {
+                    "capacityId": "AZUREIOT-co.1.sensor.1.data",
+                    "deviceId": 99001,
+                    "nature": "CLAMP",
+                },
+                {
+                    "capacityId": "AZUREIOT-co.1.sensor.2.data",
+                    "deviceId": 99002,
+                },
+            ]
+        }
+    ]
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    capacity_map = entry.runtime_data.capacity_map
+    assert "AZUREIOT-co.1.sensor.1.data" in capacity_map
+    assert "AZUREIOT-co.1.sensor.2.data" not in capacity_map
