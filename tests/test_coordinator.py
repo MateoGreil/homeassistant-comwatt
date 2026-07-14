@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import MagicMock
 
 from comwatt_client import ComwattAuthError
@@ -24,6 +25,26 @@ def _make_entry(hass: HomeAssistant) -> MockConfigEntry:
     )
     entry.add_to_hass(hass)
     return entry
+
+
+def _device_ts_side_effect(power: float, quantity: dict[str, Any]) -> Any:
+    """Route get_device_ts_time_ago by measure kind: FLOW → power, QUANTITY → buckets."""
+
+    def _route(device_id: str, kind: str, *rest: object) -> dict[str, Any]:
+        if kind == "QUANTITY":
+            return quantity
+        return {"values": [power], "timestamps": [1]}
+
+    return _route
+
+
+def _count_quantity_calls(client: MagicMock) -> int:
+    """Count get_device_ts_time_ago calls made with measure kind QUANTITY."""
+    return sum(
+        1
+        for call in client.get_device_ts_time_ago.call_args_list
+        if len(call.args) >= 2 and call.args[1] == "QUANTITY"
+    )
 
 
 async def test_setup_starts_reauth_on_bad_credentials(
@@ -215,40 +236,269 @@ async def test_capacity_map_built_from_connected_objects(
 async def test_fetch_device_metrics_returns_live_total_when_stream_active(
     hass: HomeAssistant, mock_comwatt_client: MagicMock
 ) -> None:
-    """Once the stream has taken over, _fetch_device_metrics returns the live
-    total and skips the QUANTITY/HOUR fetch so the poll and stream don't
-    double-count the same energy."""
+    """While the stream owns the live total, _fetch_device_metrics returns that
+    total and reopens the QUANTITY/HOUR path as a reconciliation when the
+    throttle allows (Slice 5), instead of skipping it outright.
+
+    Within the throttle interval the QUANTITY call is still skipped and the
+    live total is returned untouched; once the interval elapses, a new server
+    bucket reconciles the live total and the reconciled value is returned.
+    """
     mock_comwatt_client.get_sites.return_value = [SITE]
     mock_comwatt_client.get_devices.return_value = [DEVICE]
     mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
-    mock_comwatt_client.get_device_ts_time_ago.return_value = {
-        "values": [42.0],
-        "timestamps": [1],
-    }
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [500.0]},
+    )
 
     entry = _make_entry(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
     coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
 
-    def count_quantity_calls() -> int:
-        return sum(
-            1
-            for call in mock_comwatt_client.get_device_ts_time_ago.call_args_list
-            if len(call.args) >= 2 and call.args[1] == "QUANTITY"
-        )
-
-    coord._energy_state[DEVICE["id"]].live_total_wh = 1234.0
-    calls_before = count_quantity_calls()
+    state.live_total_wh = 1234.0
+    calls_before = _count_quantity_calls(mock_comwatt_client)
     result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
     assert result == {"power": 42.0, "energy": 1234.0}
-    assert count_quantity_calls() == calls_before
+    assert _count_quantity_calls(mock_comwatt_client) == calls_before
 
-    coord._energy_state[DEVICE["id"]].live_total_wh = None
-    coord._energy_state[DEVICE["id"]].last_fetched_at = time.monotonic() - 60 * 60
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 510.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+    assert _count_quantity_calls(mock_comwatt_client) == calls_before + 1
+    assert state.live_total_wh == 1234.0 + (500.0 - 510.0)
+    assert result == {"power": 42.0, "energy": 1234.0 + (500.0 - 510.0)}
+
+
+async def test_reconcile_server_bucket_corrects_live_total(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A server QUANTITY/HOUR bucket for a completed hour reconciles the live
+    total: the server's authoritative Wh corrects the live accumulator's drift.
+
+    Bucket-labeling assumption (documented here and in _fetch_device_metrics):
+    the server's `bucket_dt` is the START of the hour it represents, matching
+    the live accumulator's hour key (the power-sample timestamp truncated to
+    the hour). So a server bucket labeled 11:00 and the live accumulator's
+    11:00 entry describe the same physical hour. If real data proves the server
+    labels by the END of the hour, the fix is to key the server bucket by
+    `bucket_dt - 1h` — a one-line change; the architecture is correct either
+    way.
+    """
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [500.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 100.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 510.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 90.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 500.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 90.0}
+
+
+async def test_reconcile_skips_bucket_at_or_below_high_water_mark(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A server bucket whose `bucket_dt` is not newer than `last_bucket_ts` is
+    skipped, so an already-reconciled hour is never corrected twice and an
+    early same-hour bucket doesn't fight the live accumulator."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [500.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 100.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 510.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    calls_before = _count_quantity_calls(mock_comwatt_client)
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert _count_quantity_calls(mock_comwatt_client) == calls_before + 1
+    assert state.live_total_wh == 100.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 510.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 100.0}
+
+
+async def test_accumulation_unchanged_when_stream_not_active(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """When the stream has not taken over (`live_total_wh is None`), QUANTITY/
+    HOUR buckets accumulate into `total_wh` exactly as before Slice 5 — the
+    fallback for devices whose stream never started."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": [1, 2], "values": [10.0, 15.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = None
+    state.last_bucket_ts = None
+    state.total_wh = 0.0
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.total_wh == 25.0
+    assert state.live_total_wh is None
+    assert state.live_by_hour == {}
+    assert state.last_bucket_ts == datetime(1970, 1, 1, 0, 0, 2, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 25.0}
+
+
+async def test_reconcile_across_multiple_new_buckets(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Multiple new server buckets in one fetch are each reconciled in
+    timestamp order against the matching live-by-hour entry."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={
+            "timestamps": [
+                "2026-07-14T10:00:00.000+0000",
+                "2026-07-14T11:00:00.000+0000",
+            ],
+            "values": [500.0, 190.0],
+        },
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 100.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {
+        datetime(2026, 7, 14, 10, 0, tzinfo=UTC): 510.0,
+        datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 200.0,
+    }
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 80.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 10, 0, tzinfo=UTC)] == 500.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 190.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 80.0}
+
+
+async def test_reconcile_does_not_double_correct_on_refetch(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """After a bucket is reconciled, `live_by_hour` snaps to the server value
+    and `last_bucket_ts` advances, so re-fetching the same bucket (throttle
+    rewound) applies no further correction — the high-water mark prevents
+    double-correction."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [500.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 100.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 510.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
     await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
-    assert count_quantity_calls() == calls_before + 1
+    assert state.live_total_wh == 90.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 500.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+
+    state.last_fetched_at = time.monotonic() - 60 * 60
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 90.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 500.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 90.0}
+
+
+async def test_refresh_reconciles_live_energy_via_periodic_poll(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A periodic refresh reopens the QUANTITY path for an active stream and
+    surfaces the reconciled live total on the device's energy sensor, end-to-end
+    through _async_update_data → _fetch_all → _fetch_device_metrics."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [500.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 100.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 510.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+
+    assert coord.data["devices"][DEVICE["id"]]["energy"] == 90.0
+    assert state.live_total_wh == 90.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 500.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------

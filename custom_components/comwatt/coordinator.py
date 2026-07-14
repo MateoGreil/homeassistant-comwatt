@@ -296,9 +296,28 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _fetch_device_metrics(self, device: dict[str, Any]) -> dict[str, float | None]:
         """Fetch latest power reading and update the running energy total.
 
-        The QUANTITY/HOUR call is skipped while the cached total is younger than
-        `ENERGY_MIN_FETCH_INTERVAL_S`, since the API only publishes a new hourly
-        bucket once per hour (issue #3).
+        When the stream owns the live total (`live_total_wh is not None`), each
+        new server QUANTITY/HOUR bucket RECONCILES that total instead of being
+        accumulated: the server's authoritative Wh for a completed hour
+        corrects whatever the live accumulator measured for the same hour, so
+        drift from missed stream samples stays bounded. When the stream has not
+        taken over (`live_total_wh is None`), buckets accumulate into `total_wh`
+        as before.
+
+        Bucket-labeling assumption: the server's `bucket_dt` (from
+        `_parse_bucket_ts`) is the START of the hour it represents. The live
+        accumulator (`integrate_live_energy`) buckets each sample under the
+        sample timestamp's UTC hour, so a sample at 10:30 lands in the 10:00
+        hour — the same key as a server bucket labeled 10:00. Reconciliation
+        therefore keys the server bucket directly by
+        `bucket_dt.replace(minute=0, second=0, microsecond=0)`. If real data
+        proves the server labels by the END of the hour, the fix is
+        `hour = bucket_dt - timedelta(hours=1)`; the architecture is correct
+        either way.
+
+        The QUANTITY/HOUR call is skipped while the last successful fetch is
+        younger than `ENERGY_MIN_FETCH_INTERVAL_S`, since the API only publishes
+        a new hourly bucket once per hour (issue #3).
         """
         device_id = device["id"]
         power_ts = self._try_fetch(
@@ -309,13 +328,14 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         power = values[-1] if values else None
 
         state = self._energy_state.setdefault(device_id, _EnergyState())
-        if state.live_total_wh is not None:
-            return {"power": power, "energy": state.live_total_wh}
-        energy: float | None = state.total_wh if state.last_fetched_at is not None else None
+        live_total = state.live_total_wh
+        energy: float | None = (
+            live_total
+            if live_total is not None
+            else (state.total_wh if state.last_fetched_at is not None else None)
+        )
 
         now = monotonic()
-        # Skip the QUANTITY call if we already fetched recently — the API
-        # only changes hourly and each call is cached in `total_wh`.
         if state.last_fetched_at is None or now - state.last_fetched_at >= ENERGY_MIN_FETCH_INTERVAL_S:
             energy_ts = self._try_fetch(
                 self.client.get_device_ts_time_ago,
@@ -340,10 +360,19 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         and bucket_dt <= state.last_bucket_ts
                     ):
                         continue
-                    state.total_wh += val
+                    if live_total is None:
+                        state.total_wh += val
+                    else:
+                        hour = bucket_dt.replace(minute=0, second=0, microsecond=0)
+                        live_total += val - state.live_by_hour.get(hour, 0.0)
+                        state.live_by_hour[hour] = val
                     state.last_bucket_ts = bucket_dt
                 state.last_fetched_at = now
-                energy = state.total_wh
+                if live_total is None:
+                    energy = state.total_wh
+                else:
+                    state.live_total_wh = live_total
+                    energy = live_total
 
         return {"power": power, "energy": energy}
 
