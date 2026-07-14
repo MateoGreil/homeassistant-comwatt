@@ -8,10 +8,11 @@
   "dependencies": [],
   "documentation": "https://github.com/MateoGreil/homeassistant-comwatt/blob/main/README.md",
   "homekit": {},
-  "iot_class": "cloud_polling",
+  "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/MateoGreil/homeassistant-comwatt/issues",
   "requirements": [
-    "comwatt-client==0.4.1"
+    "comwatt-client==0.4.1",
+    "websocket-client==1.9.0"
   ],
   "ssdp": [],
   "version": "0.6.2",
