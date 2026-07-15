@@ -100,27 +100,34 @@ def _parse_bucket_ts(ts: Any) -> datetime | None:
 # for the same hour. The Comwatt API exposes no unit field and device metadata
 # (deviceKind/threePhase/global) does not predict the unit, so the unit is
 # inferred from the ratio of server value to live Wh: a Wh device lands near
-# 1.0. Buckets with no live reference (live ≈ 0) or an incoherent ratio are
-# skipped — the live accumulator stays the source of truth and the high-water
-# mark still advances so they are not reconsidered.
+# 1.0, a kWh device near 0.001. Buckets with no live reference (live ≈ 0) or an
+# incoherent ratio are skipped — the live accumulator stays the source of truth
+# and the high-water mark still advances so they are not reconsidered.
 _RECONCILE_MIN_LIVE_WH = 10.0
 _RECONCILE_WH_RATIO_LO = 0.5
 _RECONCILE_WH_RATIO_HI = 2.0
+_RECONCILE_KWH_RATIO_LO = 0.0005
+_RECONCILE_KWH_RATIO_HI = 0.002
+_KWH_TO_WH = 1000.0
 
 
 def _server_bucket_to_wh(server_val: float, live_wh: float) -> float | None:
     """Convert a server QUANTITY/HOUR value to Wh, or None to skip reconciliation.
 
-    Returns the value unchanged when it is already in Wh (its ratio to the live
-    ∫W·dt for the hour falls in the Wh band), and None when the unit cannot be
+    Infers the unit from the ratio of the server value to the live ∫W·dt for the
+    hour: a Wh device lands near ratio 1.0 (returned unchanged), a kWh device
+    near 0.001 (multiplied by 1000). Returns None when the unit cannot be
     trusted — either there is no live reference to compare against, or the ratio
-    is incoherent (e.g. a kWh value, or an anomalous virtual-device aggregation).
+    is incoherent (neither Wh nor kWh, e.g. an anomalous virtual-device
+    aggregation).
     """
     if live_wh < _RECONCILE_MIN_LIVE_WH:
         return None
     ratio = server_val / live_wh
     if _RECONCILE_WH_RATIO_LO <= ratio <= _RECONCILE_WH_RATIO_HI:
         return server_val
+    if _RECONCILE_KWH_RATIO_LO <= ratio <= _RECONCILE_KWH_RATIO_HI:
+        return server_val * _KWH_TO_WH
     return None
 
 
@@ -356,8 +363,11 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         devices also return non-zero values for hours they should be idle) or an
         incoherent ratio are skipped: the live accumulator stays the source of
         truth for that hour and the high-water mark still advances so the bucket
-        is not reconsidered. This keeps the hourly snap a bounded drift
-        correction instead of a hundred-Wh unit-conversion jump.
+        is not reconsidered. A kWh device (ratio near 0.001) is converted to Wh
+        before reconciling, so grid child-devices get a bounded drift correction
+        too. Everything outside both the Wh and kWh bands is skipped, keeping the
+        hourly snap a bounded drift correction instead of a hundred-Wh
+        unit-conversion jump.
 
         The QUANTITY/HOUR call is skipped while the last successful fetch is
         younger than `ENERGY_MIN_FETCH_INTERVAL_S`, since the API only publishes
