@@ -622,6 +622,7 @@ async def test_reconcile_prunes_stale_live_by_hour(
         datetime(2026, 7, 14, 8, 0, tzinfo=UTC): 100.0,
         datetime(2026, 7, 14, 9, 0, tzinfo=UTC): 200.0,
         datetime(2026, 7, 14, 10, 0, tzinfo=UTC): 300.0,
+        datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 510.0,
         datetime(2026, 7, 14, 12, 0, tzinfo=UTC): 50.0,
     }
     state.last_fetched_at = time.monotonic() - 60 * 60
@@ -632,6 +633,109 @@ async def test_reconcile_prunes_stale_live_by_hour(
         datetime(2026, 7, 14, 11, 0, tzinfo=UTC),
         datetime(2026, 7, 14, 12, 0, tzinfo=UTC),
     }
+
+
+async def test_reconcile_skips_kwh_unit_bucket_so_no_hundred_wh_jump(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A grid device whose QUANTITY/HOUR returns kWh (server val ~0.9 for an
+    ~900 Wh hour) must NOT snap the live total down to 0.9. The unit cannot be
+    trusted, so the bucket is skipped: the live ∫W·dt total is left untouched
+    and the high-water mark still advances so the bucket is not reconsidered."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [0.9]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 900.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 900.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 900.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 900.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 900.0}
+
+
+async def test_reconcile_skips_bucket_when_live_has_no_reference(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A bucket for an hour with no live ∫W·dt (live ≈ 0) has nothing to compare
+    against, so it is skipped — but the high-water mark advances so it is not
+    reconsidered. This is what stops bogus non-zero night values (solar,
+    injection) from snapping a live total that correctly read ~0 for that hour."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [500.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 100.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 100.0
+    assert datetime(2026, 7, 14, 11, 0, tzinfo=UTC) not in state.live_by_hour
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 100.0}
+
+
+async def test_reconcile_skips_anomalous_ratio_bucket(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A server value whose ratio to the live ∫W·dt is incoherent (neither a Wh
+    ~1.0 nor explainable as drift) is skipped. An electric-vehicle device can
+    return a one-off ~62.83 bucket while the live accumulator measured ~2 Wh for
+    that hour; snapping to 62.83 would be a spurious +60 Wh jump, so the bucket
+    is skipped and the high-water mark advances."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [62.83]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 100.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 20.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 100.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 20.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 100.0}
 
 
 async def test_capacity_map_skips_capacity_without_nature(

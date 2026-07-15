@@ -96,6 +96,34 @@ def _parse_bucket_ts(ts: Any) -> datetime | None:
     return None
 
 
+# Reconciliation compares each server QUANTITY/HOUR bucket to the live ∫W·dt
+# for the same hour. The Comwatt API exposes no unit field and device metadata
+# (deviceKind/threePhase/global) does not predict the unit, so the unit is
+# inferred from the ratio of server value to live Wh: a Wh device lands near
+# 1.0. Buckets with no live reference (live ≈ 0) or an incoherent ratio are
+# skipped — the live accumulator stays the source of truth and the high-water
+# mark still advances so they are not reconsidered.
+_RECONCILE_MIN_LIVE_WH = 10.0
+_RECONCILE_WH_RATIO_LO = 0.5
+_RECONCILE_WH_RATIO_HI = 2.0
+
+
+def _server_bucket_to_wh(server_val: float, live_wh: float) -> float | None:
+    """Convert a server QUANTITY/HOUR value to Wh, or None to skip reconciliation.
+
+    Returns the value unchanged when it is already in Wh (its ratio to the live
+    ∫W·dt for the hour falls in the Wh band), and None when the unit cannot be
+    trusted — either there is no live reference to compare against, or the ratio
+    is incoherent (e.g. a kWh value, or an anomalous virtual-device aggregation).
+    """
+    if live_wh < _RECONCILE_MIN_LIVE_WH:
+        return None
+    ratio = server_val / live_wh
+    if _RECONCILE_WH_RATIO_LO <= ratio <= _RECONCILE_WH_RATIO_HI:
+        return server_val
+    return None
+
+
 class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Fetches all Comwatt data used by the integration in one periodic cycle.
 
@@ -307,16 +335,29 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         taken over (`live_total_wh is None`), buckets accumulate into `total_wh`
         as before.
 
-        Bucket-labeling assumption: the server's `bucket_dt` (from
-        `_parse_bucket_ts`) is the START of the hour it represents. The live
-        accumulator (`integrate_live_energy`) buckets each sample under the
-        sample timestamp's UTC hour, so a sample at 10:30 lands in the 10:00
-        hour — the same key as a server bucket labeled 10:00. Reconciliation
-        therefore keys the server bucket directly by
-        `bucket_dt.replace(minute=0, second=0, microsecond=0)`. If real data
-        proves the server labels by the END of the hour, the fix is
-        `hour = bucket_dt - timedelta(hours=1)`; the architecture is correct
-        either way.
+        Bucket labeling (confirmed against live data): the server's `bucket_dt`
+        is the START of the hour it represents. The live accumulator
+        (`integrate_live_energy`) buckets each sample under the sample
+        timestamp's UTC hour, so a sample at 10:30 lands in the 10:00 hour — the
+        same key as a server bucket labeled 10:00. Reconciliation keys the
+        server bucket directly by `bucket_dt.replace(minute=0, second=0,
+        microsecond=0)`. This was confirmed with a device that ran only near the
+        end of one hour: its single non-zero bucket carried that hour's label,
+        not the previous one, so the labels are start-of-hour, not end-of-hour.
+
+        QUANTITY/HOUR units (confirmed against live data): the endpoint returns
+        no unit field and device metadata (deviceKind, threePhase, global) does
+        not predict the unit, so units are mixed per device — e.g. a solar panel
+        returns Wh for an hour (~2007 at ~2000 W) while a grid-injection child
+        returns kWh (~0.9 at ~900 W). Reconciliation therefore infers the unit
+        from the ratio of the server value to the live ∫W·dt for the same hour
+        (`_server_bucket_to_wh`): a Wh device lands near ratio 1.0. Buckets with
+        no live reference (live ≈ 0, e.g. a device that was off — some virtual
+        devices also return non-zero values for hours they should be idle) or an
+        incoherent ratio are skipped: the live accumulator stays the source of
+        truth for that hour and the high-water mark still advances so the bucket
+        is not reconsidered. This keeps the hourly snap a bounded drift
+        correction instead of a hundred-Wh unit-conversion jump.
 
         The QUANTITY/HOUR call is skipped while the last successful fetch is
         younger than `ENERGY_MIN_FETCH_INTERVAL_S`, since the API only publishes
@@ -368,8 +409,11 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         state.total_wh += val
                     else:
                         hour = bucket_dt.replace(minute=0, second=0, microsecond=0)
-                        live_total += val - state.live_by_hour.get(hour, 0.0)
-                        state.live_by_hour[hour] = val
+                        live_wh = state.live_by_hour.get(hour, 0.0)
+                        val_wh = _server_bucket_to_wh(val, live_wh)
+                        if val_wh is not None:
+                            live_total += val_wh - live_wh
+                            state.live_by_hour[hour] = val_wh
                     state.last_bucket_ts = bucket_dt
                 state.last_fetched_at = now
                 if live_total is None:
