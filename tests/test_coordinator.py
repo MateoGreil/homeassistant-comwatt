@@ -635,13 +635,13 @@ async def test_reconcile_prunes_stale_live_by_hour(
     }
 
 
-async def test_reconcile_skips_kwh_unit_bucket_so_no_hundred_wh_jump(
+async def test_reconcile_converts_kwh_bucket_without_hundred_wh_jump(
     hass: HomeAssistant, mock_comwatt_client: MagicMock
 ) -> None:
     """A grid device whose QUANTITY/HOUR returns kWh (server val ~0.9 for an
-    ~900 Wh hour) must NOT snap the live total down to 0.9. The unit cannot be
-    trusted, so the bucket is skipped: the live ∫W·dt total is left untouched
-    and the high-water mark still advances so the bucket is not reconsidered."""
+    ~900 Wh hour) is converted to 900 Wh before reconciling, so the live total
+    stays ~900 instead of snapping to ~0.9 — no hundred-Wh unit-conversion
+    jump. (Slice 1 skipped this bucket; slice 2 adds the kWh→Wh conversion.)"""
     mock_comwatt_client.get_sites.return_value = [SITE]
     mock_comwatt_client.get_devices.return_value = [DEVICE]
     mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
@@ -667,6 +667,107 @@ async def test_reconcile_skips_kwh_unit_bucket_so_no_hundred_wh_jump(
     assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 900.0
     assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
     assert result == {"power": 42.0, "energy": 900.0}
+
+
+async def test_reconcile_converts_kwh_bucket_to_wh_before_snapping(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A grid device whose QUANTITY/HOUR returns kWh (server val ~0.9 for an
+    ~900 Wh hour) is converted to 900 Wh before reconciling, so the live total
+    snaps to ~900 instead of ~0.9 — and the correction is a bounded drift fix,
+    not a hundred-Wh unit-conversion jump."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [0.9]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 1000.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 900.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 1000.0 + (900.0 - 900.0)
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 900.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 1000.0}
+
+
+async def test_reconcile_kwh_conversion_corrects_live_drift(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """When the live ∫W·dt drifted below the authoritative server kWh value, the
+    kWh→Wh conversion reconciles the live total toward the server value: server
+    1.1 kWh (1100 Wh) vs live 1000 Wh → +100 Wh correction."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [1.1]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 1000.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 1000.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 1100.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 1100.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 1100.0}
+
+
+async def test_reconcile_converts_withdrawal_kwh_bucket(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """The grid-withdrawal (soutirage) device returns kWh too: server 13.23 for
+    an ~13200 Wh hour is converted to 13230 Wh and reconciled. This covers the
+    handoff's open soutirage case — its unit is kWh, same as its injection
+    sibling under the same GRID_METER."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [13.23]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 10000.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 13000.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 10000.0 + (13230.0 - 13000.0)
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 13230.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 10230.0}
 
 
 async def test_reconcile_skips_bucket_when_live_has_no_reference(
