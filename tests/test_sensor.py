@@ -180,11 +180,9 @@ async def test_power_sensor_reads_latest_value(
 async def test_energy_sensor_accumulates_new_buckets(
     hass: HomeAssistant, mock_comwatt_client: MagicMock
 ) -> None:
-    """Each time a new timestamp appears, the delta is added to the running total.
-
-    Documents current (client-side accumulator) behavior. Finding H4 proposes
-    replacing this with a cumulative counter from the API; when that lands, this
-    test should be rewritten.
+    """At first install with no live \u222bW\u00b7dt reference, QUANTITY/HOUR buckets are skipped
+    by the unit-safe legacy path (live_wh=0 \u2192 _server_bucket_to_wh returns None) and
+    the energy sensor reports 0.0 until the WebSocket stream seeds a live reference.
     """
     mock_comwatt_client.get_sites.return_value = [SITE]
     mock_comwatt_client.get_devices.return_value = [SIMPLE_DEVICE]
@@ -203,7 +201,7 @@ async def test_energy_sensor_accumulates_new_buckets(
 
     state = hass.states.get("sensor.panel_total_energy")
     assert state is not None
-    assert state.state == "42.0"
+    assert state.state == "0.0"
     assert state.attributes["unit_of_measurement"] == UnitOfEnergy.WATT_HOUR
     assert state.attributes["device_class"] == SensorDeviceClass.ENERGY
     assert state.attributes["state_class"] == SensorStateClass.TOTAL_INCREASING
