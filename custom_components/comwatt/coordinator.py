@@ -12,6 +12,7 @@ from comwatt_client import ComwattAuthError, ComwattClient
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
@@ -20,6 +21,9 @@ if TYPE_CHECKING:
     from .stream import ComwattStreamManager
 
 _LOGGER = logging.getLogger(__name__)
+
+_STORE_VERSION = 1
+_STORE_KEY = "comwatt.energy_state"
 
 UPDATE_INTERVAL = timedelta(minutes=2)
 # The Comwatt QUANTITY/HOUR endpoint only publishes a new bucket once per hour,
@@ -159,7 +163,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._username: str = entry.data["username"]
         self._password: str = entry.data["password"]
         self._authenticated = False
-        # Per-device accumulated energy state.
+        self._energy_store: Store = Store(hass, _STORE_VERSION, _STORE_KEY)
         self._energy_state: dict[str, _EnergyState] = {}
         # Topology discovered on the most recent refresh; used by platform setup.
         self.sites: list[dict[str, Any]] = []
@@ -176,8 +180,59 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise ConfigEntryAuthFailed(str(err)) from err
         except Exception as err:  # noqa: BLE001
             raise UpdateFailed(str(err)) from err
-
+        await self.async_save_energy_state()
         return data
+
+    async def async_load_energy_state(self) -> None:
+        """Restore per-device energy state from HA storage before the first poll.
+
+        Populates live_total_wh (and its supporting fields) so the ∫W·dt stream
+        accumulator continues from the last persisted value rather than
+        reseeding from a 24-hour bucket sum on every HA restart.  Monotonic
+        clock fields (last_power_w, last_power_t, last_fetched_at) are not
+        persisted and stay at their zero/None defaults.
+        """
+        raw = await self._energy_store.async_load()
+        if raw is None:
+            return
+        for str_id, state_dict in (raw.get("data") or {}).items():
+            device_id: int | str
+            try:
+                device_id = int(str_id)
+            except (ValueError, TypeError):
+                device_id = str_id
+            state = self._energy_state.setdefault(device_id, _EnergyState())
+            state.live_total_wh = state_dict.get("live_total_wh")
+            state.total_wh = state_dict.get("total_wh", 0.0)
+            state.live_by_hour = {
+                datetime.fromisoformat(k): v
+                for k, v in (state_dict.get("live_by_hour") or {}).items()
+            }
+            raw_ts = state_dict.get("last_bucket_ts")
+            state.last_bucket_ts = datetime.fromisoformat(raw_ts) if raw_ts else None
+
+    async def async_save_energy_state(self) -> None:
+        """Persist per-device energy state to HA storage after each poll cycle.
+
+        Only fields that survive a restart are saved: live_total_wh, live_by_hour,
+        last_bucket_ts, total_wh.  Monotonic-clock fields (last_power_w,
+        last_power_t, last_fetched_at) are not restorable and are omitted.
+        Store JSON keys are always strings; device_id ints are converted at this
+        boundary so the coordinator's internal int keys remain unchanged.
+        """
+        data: dict[str, Any] = {}
+        for device_id, state in self._energy_state.items():
+            data[str(device_id)] = {
+                "live_total_wh": state.live_total_wh,
+                "total_wh": state.total_wh,
+                "live_by_hour": {
+                    k.isoformat(): v for k, v in state.live_by_hour.items()
+                },
+                "last_bucket_ts": (
+                    state.last_bucket_ts.isoformat() if state.last_bucket_ts else None
+                ),
+            }
+        await self._energy_store.async_save({"version": _STORE_VERSION, "data": data})
 
     # ------------------------------------------------------------------
     # Actions triggered by entities (executor-bound)
@@ -339,8 +394,14 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         accumulated: the server's authoritative Wh for a completed hour
         corrects whatever the live accumulator measured for the same hour, so
         drift from missed stream samples stays bounded. When the stream has not
-        taken over (`live_total_wh is None`), buckets accumulate into `total_wh`
-        as before.
+        taken over (`live_total_wh is None` — the first install before the
+        WebSocket stream has produced a live reference), each server bucket value
+        is converted to Wh via `_server_bucket_to_wh(val, live_wh)` and only
+        then accumulated into `total_wh`. Because `live_wh` is 0 (no live
+        reference yet), `_server_bucket_to_wh` returns `None` and the bucket is
+        SKIPPED, so `energy` reports `0.0` until the WebSocket stream produces a
+        live reference (≤ ~15s of energy lost) instead of accumulating raw
+        `QUANTITY` values that may be in kWh and 1000× wrong.
 
         Bucket labeling (confirmed against live data): the server's `bucket_dt`
         is the START of the hour it represents. The live accumulator
@@ -416,7 +477,11 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     ):
                         continue
                     if live_total is None:
-                        state.total_wh += val
+                        hour = bucket_dt.replace(minute=0, second=0, microsecond=0)
+                        live_wh = state.live_by_hour.get(hour, 0.0)
+                        val_wh = _server_bucket_to_wh(val, live_wh)
+                        if val_wh is not None:
+                            state.total_wh += val_wh
                     else:
                         hour = bucket_dt.replace(minute=0, second=0, microsecond=0)
                         live_wh = state.live_by_hour.get(hour, 0.0)

@@ -18,6 +18,7 @@ type ComwattConfigEntry = ConfigEntry[ComwattCoordinator]
 async def async_setup_entry(hass: HomeAssistant, entry: ComwattConfigEntry) -> bool:
     """Set up Comwatt from a config entry."""
     coordinator = ComwattCoordinator(hass, entry)
+    await coordinator.async_load_energy_state()
     # `async_config_entry_first_refresh` raises `ConfigEntryAuthFailed` or
     # `ConfigEntryNotReady` for us based on the exception the coordinator
     # raised, so no explicit re-raise is needed here.
