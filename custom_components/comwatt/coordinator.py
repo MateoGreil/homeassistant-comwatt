@@ -112,6 +112,7 @@ _RECONCILE_WH_RATIO_LO = 0.5
 _RECONCILE_WH_RATIO_HI = 2.0
 _RECONCILE_KWH_RATIO_LO = 0.0005
 _RECONCILE_KWH_RATIO_HI = 0.002
+_RECONCILE_BACKWARD_DRIFT_TOLERANCE_WH = 5.0
 _KWH_TO_WH = 1000.0
 
 
@@ -430,6 +431,25 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         hourly snap a bounded drift correction instead of a hundred-Wh
         unit-conversion jump.
 
+        Backward correction handling: once a backward correction's magnitude is
+        within `_RECONCILE_BACKWARD_DRIFT_TOLERANCE_WH` (inclusive, <=), it is
+        SKIPPED — the live accumulator stays the source of truth for that hour
+        and neither `live_total_wh` nor `live_by_hour[hour]` is mutated. This
+        keeps the `state_class=total_increasing` live total monotone so HA
+        recorder stops logging the "state is not strictly increasing" WARNING on
+        every tiny backward drift (measured live: ~0.05 to 2.6 Wh per hour of
+        noise). Larger backward corrections (`-correction > tolerance`) are
+        still applied as a snap: they indicate genuine drift, and now that the
+        live total survives restarts, skipping ALL backward corrections would
+        lock in permanent over-count forever. The high-water mark advances for
+        both applied and skipped buckets, so neither is reconsidered next fetch.
+        The tolerance is per-bucket, so a persistent systematic over-bias could
+        compound unrepaired at up to ~5 Wh/h; in practice the observed drift is
+        bidirectional noise and forward snaps dominate, so trading silenced
+        hourly recorder warnings for bounded compounding of a persistent bias is
+        deliberate — and once persistence survives restarts the accumulated
+        over-count is bounded by the hourly large-snap path eventually tripping.
+
         The QUANTITY/HOUR call is skipped while the last successful fetch is
         younger than `ENERGY_MIN_FETCH_INTERVAL_S`, since the API only publishes
         a new hourly bucket once per hour (issue #3).
@@ -487,8 +507,10 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         live_wh = state.live_by_hour.get(hour, 0.0)
                         val_wh = _server_bucket_to_wh(val, live_wh)
                         if val_wh is not None:
-                            live_total += val_wh - live_wh
-                            state.live_by_hour[hour] = val_wh
+                            correction = val_wh - live_wh
+                            if correction >= 0 or -correction > _RECONCILE_BACKWARD_DRIFT_TOLERANCE_WH:
+                                live_total += correction
+                                state.live_by_hour[hour] = val_wh
                     state.last_bucket_ts = bucket_dt
                 state.last_fetched_at = now
                 if live_total is None:
