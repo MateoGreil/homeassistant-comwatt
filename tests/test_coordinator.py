@@ -322,6 +322,151 @@ async def test_reconcile_server_bucket_corrects_live_total(
     assert result == {"power": 42.0, "energy": 90.0}
 
 
+async def test_reconcile_skips_small_backward_correction(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A server bucket whose backward correction is within the drift tolerance
+    (0 < -correction <= _RECONCILE_BACKWARD_DRIFT_TOLERANCE_WH) is SKIPPED to
+    keep the `total_increasing` live total monotone and stop HA recorder's
+    "state is not strictly increasing" warnings. The live accumulator stays the
+    source of truth for that hour and the high-water mark still advances, so the
+    bucket is not reconsidered on the next fetch.
+    """
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [508.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 100.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 510.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 100.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 510.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 100.0}
+
+    state.last_fetched_at = time.monotonic() - 60 * 60
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+    assert state.live_total_wh == 100.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 510.0
+    assert result == {"power": 42.0, "energy": 100.0}
+
+
+async def test_reconcile_applies_large_backward_correction(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A server bucket whose backward correction EXCEEDS the drift tolerance
+    (-correction > _RECONCILE_BACKWARD_DRIFT_TOLERANCE_WH) is still applied as a
+    snap: the live accumulator is corrected toward the authoritative server value,
+    preventing permanent over-count now that the live total survives restarts.
+    """
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [400.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 1000.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 510.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 1000.0 - 110.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 400.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 1000.0 - 110.0}
+
+
+async def test_reconcile_boundary_at_tolerance_is_skipped(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A backward correction of exactly the tolerance (-correction ==
+    _RECONCILE_BACKWARD_DRIFT_TOLERANCE_WH) is SKIPPED: the tolerance is
+    inclusive (<=), so exactly 5 Wh of drift is treated as monotone-able noise.
+    """
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [505.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 100.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 510.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 100.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 510.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 100.0}
+
+
+async def test_reconcile_forward_correction_unchanged(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A forward reconciliation (correction >= 0) is applied exactly as before —
+    regression guard for the forward path under the new backward-skip branch.
+    """
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [530.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 100.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 500.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 130.0
+    assert state.live_by_hour[datetime(2026, 7, 14, 11, 0, tzinfo=UTC)] == 530.0
+    assert state.last_bucket_ts == datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+    assert result == {"power": 42.0, "energy": 130.0}
+
+
 async def test_reconcile_skips_bucket_at_or_below_high_water_mark(
     hass: HomeAssistant, mock_comwatt_client: MagicMock
 ) -> None:
