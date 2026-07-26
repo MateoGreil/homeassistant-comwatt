@@ -251,7 +251,18 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
 
     def _fetch_all(self) -> dict[str, Any]:
-        """One full sync of the Comwatt account; called in the executor."""
+        """One full sync of the Comwatt account; called in the executor.
+
+        The devices loop runs sequentially with network I/O (~10–20 s total),
+        and energy values are captured as snapshots at the moment each device
+        is fetched. By publication time (when _fetch_all returns), these
+        snapshots are stale — the WebSocket stream thread has been advancing
+        live_total_wh concurrently. Publishing stale snapshots overwrites the
+        fresher live values, causing backward transitions on total_increasing
+        entities and triggering recorder WARNINGs. Before returning, re-read
+        each device's energy from the current live state to eliminate the
+        staleness window.
+        """
         if not self._authenticated:
             self.client.authenticate(self._username, self._password)
             self._authenticated = True
@@ -290,6 +301,11 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.sites = sites
         self.sensor_devices = sensor_devices
         self.switch_devices = switch_devices
+
+        for device_id, metrics in devices_data.items():
+            state = self._energy_state.get(device_id)
+            if state is not None and state.live_total_wh is not None:
+                metrics["energy"] = state.live_total_wh
 
         return {
             "sites": sites_data,

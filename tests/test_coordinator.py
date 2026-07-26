@@ -1186,3 +1186,79 @@ async def test_round_trip_live_by_hour_iso(
     assert state2.last_bucket_ts == last_ts
     assert state2.last_power_w is None
     assert state2.last_power_t is None
+
+
+async def test_published_energy_is_fresh_not_stale_snapshot(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Sequential fetch of multiple devices with concurrent stream advances:
+    published energy must be fresh (read at publication time), not the stale
+    snapshot captured during _fetch_device_metrics for earlier devices.
+
+    Simulates the production bug: device 1 is fetched and its energy is captured
+    as 1000.0. While device 2 is being fetched, the stream thread advances
+    device 1's live_total_wh to 1010.0 (via integrate_live_energy). At
+    publication time, device 1's published energy should be 1010.0 (fresh),
+    not 1000.0 (stale snapshot).
+    """
+    DEVICE_1 = {"id": "dev-1", "name": "Device 1", "deviceKind": {"code": "PANEL"}}
+    DEVICE_2 = {"id": "dev-2", "name": "Device 2", "deviceKind": {"code": "PANEL"}}
+
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE_1, DEVICE_2]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    coord._energy_state["dev-1"].live_total_wh = 1000.0
+    coord._energy_state["dev-1"].last_fetched_at = time.monotonic() - 60 * 60
+    coord._energy_state["dev-2"].live_total_wh = 2000.0
+    coord._energy_state["dev-2"].last_fetched_at = time.monotonic() - 60 * 60
+
+    def concurrent_stream_advance(device_id: str, kind: str, *rest: object) -> dict[str, Any]:
+        if kind == "QUANTITY" and device_id == "dev-2":
+            coord._energy_state["dev-1"].live_total_wh = 1010.0
+        return ({"timestamps": [1], "values": [100.0]}
+                if kind == "QUANTITY"
+                else {"values": [42.0], "timestamps": [1]})
+
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = concurrent_stream_advance
+
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+
+    assert coord.data["devices"]["dev-1"]["energy"] == 1010.0
+
+
+async def test_publish_pass_leaves_stream_less_device_untouched(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A device without stream ownership (live_total_wh is None) retains the
+    energy value returned by _fetch_device_metrics. The final publish pass
+    only rewrites energy when live_total_wh is not None.
+    """
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": [1], "values": [100.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = None
+    state.total_wh = 456.0
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+
+    assert coord.data["devices"][DEVICE["id"]]["energy"] == 456.0
