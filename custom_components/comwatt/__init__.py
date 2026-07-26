@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import EVENT_HOMEASSISTANT_FINAL_WRITE, Platform
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import DOMAIN
@@ -25,6 +25,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ComwattConfigEntry) -> b
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator
+
+    async def _async_save_energy_state_on_final_write(_event: Event) -> None:
+        """Save energy state when HA performs its final write to disk.
+
+        EVENT_HOMEASSISTANT_FINAL_WRITE fires after EVENT_HOMEASSISTANT_STOP
+        and is HA's designated hook for integrations to persist critical state
+        before shutdown. This captures accumulated energy from the WebSocket
+        stream since the last poll-cycle save (up to 2 min between regular
+        polls), preventing loss of energy data on clean shutdown or restart.
+        """
+        await coordinator.async_save_energy_state()
+
+    entry.async_on_unload(
+        hass.bus.async_listen(EVENT_HOMEASSISTANT_FINAL_WRITE, _async_save_energy_state_on_final_write)
+    )
+
     _async_prune_stale(hass, entry, coordinator)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     coordinator.stream_manager = ComwattStreamManager(
@@ -35,11 +51,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ComwattConfigEntry) -> b
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ComwattConfigEntry) -> bool:
-    """Unload a config entry."""
+    """Unload a config entry.
+
+    Stops the WebSocket stream to freeze the energy accumulator, persists the
+    current state to storage (so an integration reload doesn't lose accumulated
+    energy), then unloads the platforms.
+    """
     coordinator = entry.runtime_data
     if coordinator.stream_manager is not None:
         await coordinator.stream_manager.async_stop()
         coordinator.stream_manager = None
+    await coordinator.async_save_energy_state()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
