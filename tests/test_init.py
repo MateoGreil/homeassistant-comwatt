@@ -4,17 +4,23 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import EVENT_HOMEASSISTANT_FINAL_WRITE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers.storage import Store
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.comwatt.const import DOMAIN
 from custom_components.comwatt.coordinator import ComwattCoordinator
 
+_STORE_KEY = "comwatt.energy_state"
+_STORE_VERSION = 1
+
 ENTRY_DATA = {"username": "user@example.com", "password": "secret"}
 
 SITE = {"id": "site-1", "name": "Home", "siteKind": "RESIDENTIAL"}
 DEVICE = {"id": "dev-1", "name": "Panel", "deviceKind": {"code": "PANEL"}}
+DEVICE_23593 = {"id": 23593, "name": "Solar Panel", "deviceKind": {"code": "PANEL"}}
 
 
 def _make_entry(hass: HomeAssistant) -> MockConfigEntry:
@@ -107,3 +113,105 @@ async def test_setup_prunes_stale_entities_and_devices(
     assert "Old Panel" not in remaining_device_names
     # Current device is still there.
     assert "Panel" in remaining_device_names
+
+
+async def test_energy_state_saved_on_final_write(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Energy state is persisted to store when EVENT_HOMEASSISTANT_FINAL_WRITE fires,
+    capturing stream-accumulated energy beyond the last poll-cycle save.
+    """
+    store = Store(hass, _STORE_VERSION, _STORE_KEY)
+    await store.async_save(
+        {
+            "version": 1,
+            "data": {
+                "23593": {
+                    "live_total_wh": 1000.0,
+                    "total_wh": 0.0,
+                    "live_by_hour": {},
+                    "last_bucket_ts": None,
+                }
+            },
+        }
+    )
+
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE_23593]
+    mock_comwatt_client.get_device_ts_time_ago.return_value = {
+        "values": [200.0],
+        "timestamps": [1],
+    }
+    mock_comwatt_client.get_site_time_series.return_value = {
+        "autoproductionRates": [],
+    }
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = entry.runtime_data
+    device_id = 23593
+
+    state = coordinator._energy_state[device_id]
+    state.live_total_wh = 1000.0 + 10.5
+
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_FINAL_WRITE)
+    await hass.async_block_till_done()
+
+    raw = await store.async_load()
+
+    assert raw is not None
+    assert "23593" in raw["data"]
+    assert raw["data"]["23593"]["live_total_wh"] == 1010.5
+
+
+async def test_energy_state_saved_on_unload(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Energy state is persisted to store when the config entry is unloaded,
+    ensuring a reload doesn't lose stream-accumulated energy.
+    """
+    store = Store(hass, _STORE_VERSION, _STORE_KEY)
+    await store.async_save(
+        {
+            "version": 1,
+            "data": {
+                "23593": {
+                    "live_total_wh": 2000.0,
+                    "total_wh": 0.0,
+                    "live_by_hour": {},
+                    "last_bucket_ts": None,
+                }
+            },
+        }
+    )
+
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE_23593]
+    mock_comwatt_client.get_device_ts_time_ago.return_value = {
+        "values": [200.0],
+        "timestamps": [1],
+    }
+    mock_comwatt_client.get_site_time_series.return_value = {
+        "autoproductionRates": [],
+    }
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = entry.runtime_data
+    device_id = 23593
+
+    state = coordinator._energy_state[device_id]
+    state.live_total_wh = 2000.0 + 7.25
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    raw = await store.async_load()
+
+    assert raw is not None
+    assert "23593" in raw["data"]
+    assert raw["data"]["23593"]["live_total_wh"] == 2007.25
