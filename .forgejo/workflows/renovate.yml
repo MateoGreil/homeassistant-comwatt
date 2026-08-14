@@ -8,7 +8,7 @@ on:
 jobs:
   renovate:
     runs-on: ubuntu-latest
-    container: renovate/renovate:43
+    container: renovate/renovate:44
     steps:
       - name: Run Renovate
         run: renovate
