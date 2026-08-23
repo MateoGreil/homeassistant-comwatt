@@ -55,6 +55,24 @@ def _power(key: str, friendly_suffix: str) -> ComwattSiteMetricDescription:
     )
 
 
+def _site_total_energy(key: str, friendly_suffix: str) -> ComwattSiteMetricDescription:
+    """Cumulative site energy fed only by official QUANTITY/HOUR buckets.
+
+    The coordinator advances the total in hourly steps as the server publishes
+    each completed hour (seeded with ~8 days of official history on the first
+    run) — there is deliberately no real-time integration between buckets;
+    live power is covered by the `*_power` site sensors and per-device
+    `*_total_energy` entities.
+    """
+    return ComwattSiteMetricDescription(
+        key=key,
+        friendly_suffix=friendly_suffix,
+        native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+    )
+
+
 SITE_METRICS: tuple[ComwattSiteMetricDescription, ...] = (
     # Existing sensor — `key` preserved so the unique_id is unchanged.
     _rate("auto_production_rate", "Auto Production Rate"),
@@ -67,6 +85,12 @@ SITE_METRICS: tuple[ComwattSiteMetricDescription, ...] = (
     _power("withdrawal", "Withdrawal"),
     _power("charge", "Charge"),
     _power("discharge", "Discharge"),
+    _site_total_energy("production_total_energy", "Production Total Energy"),
+    _site_total_energy("consumption_total_energy", "Consumption Total Energy"),
+    _site_total_energy("injection_total_energy", "Injection Total Energy"),
+    _site_total_energy("withdrawal_total_energy", "Withdrawal Total Energy"),
+    _site_total_energy("charge_total_energy", "Charge Total Energy"),
+    _site_total_energy("discharge_total_energy", "Discharge Total Energy"),
 )
 
 

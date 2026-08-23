@@ -26,10 +26,11 @@ _STORE_VERSION = 1
 _STORE_KEY = "comwatt.energy_state"
 
 UPDATE_INTERVAL = timedelta(minutes=2)
-# The Comwatt QUANTITY/HOUR endpoint only publishes a new bucket once per hour,
-# so polling every 2 min is 29 wasted calls per hour per device. Skip the call
-# when the last successful fetch is younger than this. 55 min (not 60) gives
-# one-poll slack so we still see the new bucket shortly after it appears.
+# The Comwatt QUANTITY/HOUR endpoints (per device and whole-site rollup) only
+# publish a new bucket once per hour, so polling every 2 min is 29 wasted
+# calls per hour per device or site. Skip the call when the last successful
+# fetch is younger than this. 55 min (not 60) gives one-poll slack so we still
+# see the new bucket shortly after it appears.
 ENERGY_MIN_FETCH_INTERVAL_S = 55 * 60
 SWITCH_NATURE = ("POWER_SWITCH", "RELAY")
 
@@ -50,6 +51,17 @@ SITE_TIME_SERIES_KEYS: dict[str, str] = {
     "withdrawalRates": "withdrawal_rate",
 }
 
+SITE_ENERGY_BUCKET_KEYS: dict[str, str] = {
+    "productions": "production",
+    "consumptions": "consumption",
+    "injections": "injection",
+    "withdrawals": "withdrawal",
+    "charges": "charge",
+    "discharges": "discharge",
+}
+
+_SITE_ENERGY_STORE_KEY = "__sites__"
+
 
 @dataclass
 class _EnergyState:
@@ -62,6 +74,21 @@ class _EnergyState:
     last_power_t: float | None = None
     live_total_wh: float | None = None
     live_by_hour: dict[datetime, float] = field(default_factory=dict)
+
+
+@dataclass
+class _SiteEnergyState:
+    """Per-site bookkeeping for the official-bucket energy accumulator.
+
+    `totals` holds one cumulative Wh counter per site metric (production,
+    consumption, …), driven exclusively by the server's QUANTITY/HOUR buckets:
+    each bucket newer than `last_bucket_ts` is added exactly once, so the
+    counters only ever advance. The first fetch seeds them with the whole
+    8-day request window so the Energy dashboard immediately shows history.
+    """
+
+    totals: dict[str, float] = field(default_factory=dict)
+    last_bucket_ts: datetime | None = None
 
 
 def _parse_bucket_ts(ts: Any) -> datetime | None:
@@ -144,7 +171,12 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     executor, and returns a dict shaped as::
 
         {
-            "sites": {site_id: {"auto_production_rate": float|None}},
+            "sites": {
+                site_id: {
+                    "auto_production_rate": float | None,
+                    "production_total_energy": float,
+                }
+            },
             "devices": {device_id: {"power": float|None, "energy": float|None}},
             "switches": {device_id: {"is_on": bool|None, "capacity_id": str|None}},
         }
@@ -167,6 +199,8 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._authenticated = False
         self._energy_store: Store = Store(hass, _STORE_VERSION, _STORE_KEY)
         self._energy_state: dict[str, _EnergyState] = {}
+        self._site_energy_state: dict[str | int, _SiteEnergyState] = {}
+        self._last_site_energy_fetch: float | None = None
         # Topology discovered on the most recent refresh; used by platform setup.
         self.sites: list[dict[str, Any]] = []
         self.sensor_devices: list[dict[str, Any]] = []
@@ -186,18 +220,36 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return data
 
     async def async_load_energy_state(self) -> None:
-        """Restore per-device energy state from HA storage before the first poll.
+        """Restore per-device and per-site energy state from HA storage.
 
-        Populates live_total_wh (and its supporting fields) so the ∫W·dt stream
-        accumulator continues from the last persisted value rather than
-        reseeding from a 24-hour bucket sum on every HA restart.  Monotonic
-        clock fields (last_power_w, last_power_t, last_fetched_at) are not
-        persisted and stay at their zero/None defaults.
+        Device state populates live_total_wh (and its supporting fields) so the
+        ∫W·dt stream accumulator continues from the last persisted value rather
+        than reseeding from a 24-hour bucket sum on every HA restart.  Site
+        state (under the reserved `__sites__` key) restores the cumulative
+        totals and their high-water mark so the `*_total_energy` site sensors
+        continue from the persisted totals without re-folding old buckets.
+        Monotonic clock fields (last_power_w, last_power_t, last_fetched_at,
+        _last_site_energy_fetch) are not persisted and stay at their zero/None
+        defaults.  Store keys are strings; int site ids are normalized back to
+        int so runtime lookups match.
         """
         raw = await self._energy_store.async_load()
         if raw is None:
             return
-        for str_id, state_dict in (raw.get("data") or {}).items():
+        data = raw.get("data") or {}
+        for str_site_id, site_dict in (data.get(_SITE_ENERGY_STORE_KEY) or {}).items():
+            site_id: int | str
+            try:
+                site_id = int(str_site_id)
+            except (ValueError, TypeError):
+                site_id = str_site_id
+            state = self._site_energy_state.setdefault(site_id, _SiteEnergyState())
+            state.totals = dict(site_dict.get("totals") or {})
+            raw_ts = site_dict.get("last_bucket_ts")
+            state.last_bucket_ts = datetime.fromisoformat(raw_ts) if raw_ts else None
+        for str_id, state_dict in data.items():
+            if str_id == _SITE_ENERGY_STORE_KEY:
+                continue
             device_id: int | str
             try:
                 device_id = int(str_id)
@@ -214,11 +266,14 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             state.last_bucket_ts = datetime.fromisoformat(raw_ts) if raw_ts else None
 
     async def async_save_energy_state(self) -> None:
-        """Persist per-device energy state to HA storage after each poll cycle.
+        """Persist per-device and per-site energy state to HA storage after each poll.
 
-        Only fields that survive a restart are saved: live_total_wh, live_by_hour,
-        last_bucket_ts, total_wh.  Monotonic-clock fields (last_power_w,
-        last_power_t, last_fetched_at) are not restorable and are omitted.
+        Only fields that survive a restart are saved: live_total_wh,
+        live_by_hour, last_bucket_ts, total_wh for devices; totals and
+        last_bucket_ts for sites, nested under the reserved `__sites__` key so
+        site ids never collide with device ids in the store's `data` dict.
+        Monotonic-clock fields (last_power_w, last_power_t, last_fetched_at,
+        _last_site_energy_fetch) are not restorable and are omitted.
         Store JSON keys are always strings; device_id ints are converted at this
         boundary so the coordinator's internal int keys remain unchanged.
         """
@@ -234,6 +289,15 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     state.last_bucket_ts.isoformat() if state.last_bucket_ts else None
                 ),
             }
+        data[_SITE_ENERGY_STORE_KEY] = {
+            str(site_id): {
+                "last_bucket_ts": (
+                    state.last_bucket_ts.isoformat() if state.last_bucket_ts else None
+                ),
+                "totals": dict(state.totals),
+            }
+            for site_id, state in self._site_energy_state.items()
+        }
         await self._energy_store.async_save({"version": _STORE_VERSION, "data": data})
 
     # ------------------------------------------------------------------
@@ -277,6 +341,13 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         switch_devices: list[dict[str, Any]] = []
         self.capacity_map = {}
 
+        now = monotonic()
+        site_energy_due = (
+            self._last_site_energy_fetch is None
+            or now - self._last_site_energy_fetch >= ENERGY_MIN_FETCH_INTERVAL_S
+        )
+        site_energy_fetched = False
+
         for site in sites:
             site_id = site.get("id")
             if site_id is None:
@@ -287,6 +358,9 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 site_id, "FLOW", "NONE", None, "HOUR", 1,
             )
             sites_data[site_id] = self._extract_site_metrics(site_ts or {})
+            site_energy_fetched |= self._sync_site_energy(
+                site_id, sites_data[site_id], site_energy_due
+            )
 
             connected_objects = self._try_fetch(self.client.get_connected_objects, site_id)
             self._fold_capacity_map(connected_objects or [])
@@ -302,6 +376,9 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.sites = sites
         self.sensor_devices = sensor_devices
         self.switch_devices = switch_devices
+
+        if site_energy_fetched:
+            self._last_site_energy_fetch = now
 
         for device_id, metrics in devices_data.items():
             state = self._energy_state.get(device_id)
@@ -348,6 +425,92 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 continue
             metrics[internal_key] = value
         return metrics
+
+    def _sync_site_energy(
+        self, site_id: Any, site_metrics: dict[str, Any], due: bool
+    ) -> bool:
+        """Publish this site's cumulative energy totals and fold in new official buckets.
+
+        The totals are driven exclusively by the server's official
+        QUANTITY/HOUR buckets, fetched as
+        `get_site_time_series(site_id, "QUANTITY", "HOUR", None, "DAY", 8)`
+        (measure_kind QUANTITY, aggregation_level HOUR, aggregation_type None,
+        time_ago DAY/8): each bucket whose timestamp is newer than the site's
+        `last_bucket_ts` high-water mark is added exactly once to the matching
+        counter, and the result is published under the
+        `<metric>_total_energy` keys of the site's snapshot. There is
+        deliberately NO client-side integration between buckets — the total
+        advances in hourly steps as the server publishes each completed hour,
+        and real-time ∫W·dt is already covered by the `*_power` site sensors
+        and the per-device `*_total_energy` entities. On the first fetch the
+        8-day window seeds the counters with official history so the Energy
+        dashboard immediately shows data. When `due` is false (the ~55-min
+        gate is closed, shared with the device QUANTITY path's cadence) or the
+        fetch fails, the last known totals are republished unchanged. Returns
+        True when a server fetch succeeded, so the caller advances the gate.
+
+        The high-water mark is per site, not per metric: a metric whose series
+        is missing or shorter than `timestamps` loses that bucket permanently,
+        so the skip is logged at debug level to stay observable. Negative Wh
+        values are corrupt upstream data — folding them would push a
+        TOTAL_INCREASING sensor backwards and break HA statistics — so they are
+        rejected with a warning and the counter keeps its previous value.
+        """
+        state = self._site_energy_state.setdefault(site_id, _SiteEnergyState())
+        for metric, total in state.totals.items():
+            site_metrics[f"{metric}_total_energy"] = total
+        if not due:
+            return False
+        site_ts = self._try_fetch(
+            self.client.get_site_time_series,
+            site_id, "QUANTITY", "HOUR", None, "DAY", 8,
+        )
+        if site_ts is None:
+            return False
+        timestamps = site_ts.get("timestamps")
+        if not isinstance(timestamps, list):
+            return True
+        for index, ts in enumerate(timestamps):
+            bucket_dt = _parse_bucket_ts(ts)
+            if bucket_dt is None:
+                _LOGGER.debug(
+                    "Skipping unparseable site energy timestamp %r for site %s",
+                    ts,
+                    site_id,
+                )
+                continue
+            if state.last_bucket_ts is not None and bucket_dt <= state.last_bucket_ts:
+                continue
+            for api_key, metric in SITE_ENERGY_BUCKET_KEYS.items():
+                series = site_ts.get(api_key)
+                if not isinstance(series, list) or index >= len(series):
+                    if isinstance(series, list):
+                        _LOGGER.debug(
+                            "Skipping site bucket %s for metric %s of site %s: "
+                            "series too short (%d values)",
+                            bucket_dt.isoformat(),
+                            metric,
+                            site_id,
+                            len(series),
+                        )
+                    continue
+                value = series[index]
+                if value is None:
+                    continue
+                if value < 0:
+                    _LOGGER.warning(
+                        "Ignoring negative site bucket %s for metric %s of site %s: %s Wh",
+                        bucket_dt.isoformat(),
+                        metric,
+                        site_id,
+                        value,
+                    )
+                    continue
+                state.totals[metric] = state.totals.get(metric, 0.0) + value
+            state.last_bucket_ts = bucket_dt
+        for metric, total in state.totals.items():
+            site_metrics[f"{metric}_total_energy"] = total
+        return True
 
     def _try_fetch(self, fn: Any, *args: Any) -> Any:
         """Call `fn(*args)`; re-raise auth errors, return None on other failure."""

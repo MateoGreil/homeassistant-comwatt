@@ -1,11 +1,13 @@
 """Tests for the Comwatt DataUpdateCoordinator."""
 from __future__ import annotations
 
+import logging
 import time
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from comwatt_client import ComwattAuthError
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -1262,3 +1264,197 @@ async def test_publish_pass_leaves_stream_less_device_untouched(
     await hass.async_block_till_done()
 
     assert coord.data["devices"][DEVICE["id"]]["energy"] == 456.0
+
+
+def _site_ts_side_effect(quantity: dict[str, Any]) -> Any:
+    """Route get_site_time_series by measure kind: FLOW → empty, QUANTITY → buckets."""
+
+    def _route(site_id: str, measure_kind: str, *rest: object) -> dict[str, Any]:
+        if measure_kind == "QUANTITY":
+            return quantity
+        return {"autoproductionRates": []}
+
+    return _route
+
+
+def _count_site_quantity_calls(client: MagicMock) -> int:
+    """Count get_site_time_series calls made with measure kind QUANTITY."""
+    return sum(
+        1
+        for call in client.get_site_time_series.call_args_list
+        if len(call.args) >= 2 and call.args[1] == "QUANTITY"
+    )
+
+
+async def test_site_energy_fetch_is_gated(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """The site QUANTITY/HOUR call runs at most once per ENERGY_MIN_FETCH_INTERVAL_S,
+    mirroring the device gate: a 2-min refresh does not re-call the endpoint."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _site_ts_side_effect(
+        {"timestamps": [1], "productions": [10.0]}
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert _count_site_quantity_calls(mock_comwatt_client) == 1
+
+    coord = entry.runtime_data
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    assert _count_site_quantity_calls(mock_comwatt_client) == 1, "site energy endpoint should be skipped"
+
+    coord._last_site_energy_fetch = time.monotonic() - 60 * 60
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    assert (
+        _count_site_quantity_calls(mock_comwatt_client) == 2
+    ), "site energy endpoint should be called again after the interval"
+
+
+async def test_site_energy_seed_all_sites_same_poll(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Every site is folded in the same gated poll — the coordinator-level gate
+    must not starve sites listed after the first one (each site gets its seed
+    and its own totals on the first refresh)."""
+    site_int = {"id": 3349, "name": "Greil", "siteKind": "RESIDENTIAL"}
+    mock_comwatt_client.get_sites.return_value = [SITE, site_int]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _site_ts_side_effect(
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [100.0]}
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert _count_site_quantity_calls(mock_comwatt_client) == 2
+    coord = entry.runtime_data
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+    assert coord.data["sites"][3349]["production_total_energy"] == 100.0
+
+
+async def test_site_energy_state_uses_reserved_store_key(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Site totals persist under the reserved `__sites__` key of the existing
+    energy store — never mixed with per-device entries — and restore into a
+    fresh coordinator, with int site ids normalized back to int keys."""
+    site_int = {"id": 3349, "name": "Greil", "siteKind": "RESIDENTIAL"}
+    mock_comwatt_client.get_sites.return_value = [SITE, site_int]
+    mock_comwatt_client.get_devices.return_value = [DEVICE_23593]
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [500.0]},
+    )
+    mock_comwatt_client.get_site_time_series.side_effect = _site_ts_side_effect(
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [100.0]}
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    store = Store(hass, _STORE_VERSION, _STORE_KEY)
+    raw = await store.async_load()
+    assert raw is not None
+    assert raw["version"] == 1
+    assert "23593" in raw["data"], "device entries keep their per-id keys"
+    sites_entry = raw["data"]["__sites__"]
+    assert sites_entry["site-1"]["totals"] == {"production": 100.0}
+    assert sites_entry["site-1"]["last_bucket_ts"] == "2026-08-15T10:00:00+00:00"
+    assert sites_entry["3349"]["totals"] == {"production": 100.0}
+
+    coord2 = ComwattCoordinator(hass, entry)
+    await coord2.async_load_energy_state()
+    assert set(coord2._site_energy_state) == {"site-1", 3349}
+    state2 = coord2._site_energy_state["site-1"]
+    assert state2.totals == {"production": 100.0}
+    assert state2.last_bucket_ts == datetime(2026, 8, 15, 10, 0, tzinfo=UTC)
+
+async def test_site_energy_skips_negative_bucket_values(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A negative Wh bucket is corrupt upstream data: folding it would push a
+    TOTAL_INCREASING sensor backwards and corrupt HA statistics, so it is
+    skipped (the total stays put) and a warning is logged naming the metric,
+    value, site and bucket timestamp."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _site_ts_side_effect(
+        {
+            "timestamps": [
+                "2026-08-15T10:00:00.000+0000",
+                "2026-08-15T11:00:00.000+0000",
+            ],
+            "productions": [100.0, -50.0],
+            "consumptions": [10.0, 30.0],
+        }
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+    assert coord.data["sites"]["site-1"]["consumption_total_energy"] == 40.0
+
+    coord._last_site_energy_fetch = time.monotonic() - 60 * 60
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "negative" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert "production" in warnings[0].getMessage()
+    assert "-50" in warnings[0].getMessage()
+    assert "site-1" in warnings[0].getMessage()
+    assert "2026-08-15T11:00:00+00:00" in warnings[0].getMessage()
+
+
+async def test_site_energy_short_series_does_not_corrupt_other_metrics(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A metric whose series is missing or shorter than `timestamps` only loses
+    its own bucket: every other metric still folds the full window, and the
+    skip is observable as a debug log naming the metric, index, series length,
+    site and bucket timestamp."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _site_ts_side_effect(
+        {
+            "timestamps": [
+                "2026-08-15T10:00:00.000+0000",
+                "2026-08-15T11:00:00.000+0000",
+            ],
+            "productions": [100.0, 200.0],
+            "consumptions": [10.0],
+        }
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="custom_components.comwatt.coordinator"):
+        entry = _make_entry(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 300.0
+    assert coord.data["sites"]["site-1"]["consumption_total_energy"] == 10.0
+
+    skips = [
+        r for r in caplog.records if r.levelno == logging.DEBUG and "site bucket" in r.getMessage()
+    ]
+    assert len(skips) == 1
+    message = skips[0].getMessage()
+    assert "consumption" in message
+    assert "site-1" in message
+    assert "2026-08-15T11:00:00+00:00" in message

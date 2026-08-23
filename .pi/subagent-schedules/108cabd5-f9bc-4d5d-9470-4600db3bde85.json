@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "id": "8QwqBRwEIC",
+      "name": "Definitive 21:29 reconcile check",
+      "description": "Definitive 21:29 reconcile check",
+      "schedule": "2026-07-14T21:47:25.265Z",
+      "scheduleType": "once",
+      "subagent_type": "general-purpose",
+      "prompt": "You are performing the DEFINITIVE box verification of a bug fix for the Comwatt Home Assistant integration's hourly energy reconciliation. A scheduled interim check already covered 19:40–20:50 UTC; YOUR job is to verify the critical reconciliation event that occurs at ~21:29 UTC — the FIRST server QUANTITY/HOUR bucket (the 20:00 hour, i.e. 20:00–21:00 UTC) reconciled against a FULL hour of live ∫W·dt data. This is the one cycle that definitively proves the fix.\n\n## Background\n\nBug: the reconciliation assumed the server QUANTITY/HOUR value was in Wh; grid devices (injection/soutirage) return kWh. The OLD buggy code snapped the live total DOWN by hundreds of Wh every hour for those devices (observed: injection −508 Wh, soutirage −595 Wh). The deployed fix infers the unit from the ratio of the server value to the live ∫W·dt: a Wh device (ratio ~1.0) is reconciled as-is; a kWh device (ratio ~0.001) is converted ×1000 then reconciled (bounded drift correction); buckets with no live reference (live≈0) or an incoherent ratio are SKIPPED. Goal: at the ~21:29 reconcile, NO `*_total_energy` sensor makes a large/aberrant jump — especially no hundred-Wh downward snap on injection/soutirage.\n\nThe stream (live ∫) restarted at 19:39 UTC. So the 20:00–21:00 hour is the first with a FULL hour of live data. The 20:00 server bucket completes at 21:00 UTC and is fetched at the first throttle-allowed coordinator refresh (~21:29 UTC, since the previous fetch was ~20:34 and the throttle is 55 min).\n\n## Your task\n\n1. SSH to the box and read BOTH monitor CSVs (the second one continues from where the first's window ends):\n   `ssh root@192.168.1.200 'cat /tmp/comwatt_monitor.csv; echo ===SPLIT===; cat /tmp/comwatt_monitor2.csv'`\n   Columns: `ts_utc,inj_total,sout_total,solar_total,freezer_total,clim_total,inj_pw,sout_pw,solar_pw`\n   (`*_total` = cumulative Wh sensors under test; `*_pw` = instantaneous W.)\n\n2. Print both raw CSVs.\n\n3. Focus on the window ~21:20 to ~21:40 UTC (bracketing the ~21:29 reconcile). For each of inj_total, sout_total, solar_total, compute per-2-min-interval: Δtotal, expected_from_power = avg(power)·(2/60)h, residual = Δtotal − expected. The reconcile event is the interval where a residual spike appears. Flag any |residual| > 50 Wh, and ESPECIALLY any NEGATIVE Δtotal beyond ~30 Wh on injection or soutirage (the old-bug signature).\n\n4. Also compute, across the FULL combined dataset, the min Δtotal for each of the 5 sensors (to confirm none ever snapped down significantly).\n\n5. Verdict: PASS if (a) no large/aberrant jump at ~21:29 on any device, AND (b) injection/soutirage either show a bounded kWh→Wh correction (residual up to ~±some tens of Wh) or are cleanly skipped (no snap) AND (c) their totals remain monotonic (no big negative). FAIL if any device snapped down by hundreds of Wh. Distinguish a legitimate one-time partial-hour correction from the pathological 1000× snap.\n\n## Report back\nReport: (a) both raw CSVs, (b) the residual/jump analysis around 21:20–21:40 for inj/sout/solar, (c) min-Δ across the full dataset for all 5 sensors, (d) a clear PASS/FAIL verdict with reasoning. The controller will inspect the raw numbers itself before opening the PR. Do not modify or stop anything on the box.",
+      "model": "glm-5.2",
+      "isolated": false,
+      "enabled": false,
+      "createdAt": "2026-07-14T20:55:25.265Z",
+      "runCount": 0,
+      "lastStatus": "error"
+    }
+  ]
+}
