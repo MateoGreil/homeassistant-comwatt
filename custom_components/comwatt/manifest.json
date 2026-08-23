@@ -1,6 +1,9 @@
 {
   "domain": "comwatt",
   "name": "Comwatt",
+  "after_dependencies": [
+    "recorder"
+  ],
   "codeowners": [
     "@MateoGreil"
   ],
