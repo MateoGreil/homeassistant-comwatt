@@ -1,6 +1,8 @@
 """Tests for Comwatt sensors."""
 from __future__ import annotations
 
+import time
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -284,3 +286,181 @@ async def test_auto_production_rate_reads_latest_value(
     # Only the setup-time authenticate call; update() should not re-auth on a
     # successful fetch.
     assert mock_comwatt_client.authenticate.call_count == 1
+
+
+def _site_ts_side_effect(quantity: dict[str, Any]) -> Any:
+    """Route get_site_time_series by measure kind: FLOW → empty, QUANTITY → buckets."""
+
+    def _route(site_id: str, measure_kind: str, *rest: object) -> dict[str, Any]:
+        if measure_kind == "QUANTITY":
+            return quantity
+        return {"autoproductionRates": []}
+
+    return _route
+
+
+def _count_site_quantity_calls(client: MagicMock) -> int:
+    """Count get_site_time_series calls made with measure kind QUANTITY."""
+    return sum(
+        1
+        for call in client.get_site_time_series.call_args_list
+        if len(call.args) >= 2 and call.args[1] == "QUANTITY"
+    )
+
+
+TOTAL_ENERGY_SLUGS = (
+    "production",
+    "consumption",
+    "injection",
+    "withdrawal",
+    "charge",
+    "discharge",
+)
+
+
+async def test_site_total_energy_sensors_created(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Every site exposes the 6 *_total_energy sensors as Wh ENERGY
+    total_increasing counters, with unique_ids distinct from the per-hour
+    delta sensors."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.return_value = {}
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    registry = hass.data["entity_registry"]
+    unique_ids = {e.unique_id for e in registry.entities.values() if e.domain == "sensor"}
+    for slug in TOTAL_ENERGY_SLUGS:
+        state = hass.states.get(f"sensor.home_{slug}_total_energy")
+        assert state is not None, f"missing sensor.home_{slug}_total_energy"
+        assert state.attributes["unit_of_measurement"] == UnitOfEnergy.WATT_HOUR
+        assert state.attributes["device_class"] == SensorDeviceClass.ENERGY
+        assert state.attributes["state_class"] == SensorStateClass.TOTAL_INCREASING
+        assert f"site_site-1_{slug}_total_energy" in unique_ids
+
+
+async def test_site_total_energy_seed_from_history(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """On the first fetch the 8-day QUANTITY/HOUR window seeds each total with
+    the sum of every bucket (null bucket values are skipped)."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _site_ts_side_effect(
+        {
+            "timestamps": [
+                "2026-08-13T10:00:00.000+0000",
+                "2026-08-14T10:00:00.000+0000",
+                "2026-08-15T10:00:00.000+0000",
+            ],
+            "productions": [100.0, 200.0, 50.0],
+            "consumptions": [10.0, None, 30.0],
+        }
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.home_production_total_energy").state == "350.0"
+    assert hass.states.get("sensor.home_consumption_total_energy").state == "40.0"
+
+
+async def test_site_total_energy_accumulates_buckets(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Across gated polls the published total advances by the sum of the new
+    buckets only — the high-water mark prevents re-summing old ones."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    quantity = {
+        "timestamps": [
+            "2026-08-14T10:00:00.000+0000",
+            "2026-08-15T10:00:00.000+0000",
+        ],
+        "productions": [100.0, 200.0],
+    }
+    mock_comwatt_client.get_site_time_series.side_effect = _site_ts_side_effect(quantity)
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.home_production_total_energy").state == "300.0"
+
+    quantity["timestamps"].append("2026-08-15T11:00:00.000+0000")
+    quantity["productions"].append(50.0)
+
+    coord = entry.runtime_data
+    coord._last_site_energy_fetch = time.monotonic() - 60 * 60
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+
+    assert _count_site_quantity_calls(mock_comwatt_client) == 2
+    assert hass.states.get("sensor.home_production_total_energy").state == "350.0"
+
+
+async def test_site_total_energy_survives_restart(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Persisted totals and high-water mark survive an integration reload: the
+    restored total is republished and buckets already folded before the restart
+    are not re-summed."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    quantity = {
+        "timestamps": ["2026-08-15T10:00:00.000+0000"],
+        "productions": [100.0],
+    }
+    mock_comwatt_client.get_site_time_series.side_effect = _site_ts_side_effect(quantity)
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.home_production_total_energy").state == "100.0"
+
+    quantity["timestamps"].append("2026-08-15T11:00:00.000+0000")
+    quantity["productions"].append(70.0)
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.home_production_total_energy")
+    assert state is not None
+    assert state.state == "170.0"
+
+
+async def test_site_total_energy_keeps_last_total_on_api_failure(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """When the site QUANTITY/HOUR call raises, the last known total stays
+    published (the accumulator is never corrected downwards)."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _site_ts_side_effect(
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [100.0]}
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.home_production_total_energy").state == "100.0"
+
+    def failing_quantity(site_id: str, measure_kind: str, *rest: object) -> dict[str, Any]:
+        if measure_kind == "QUANTITY":
+            raise RuntimeError("site time-series down")
+        return {"autoproductionRates": []}
+
+    mock_comwatt_client.get_site_time_series.side_effect = failing_quantity
+    coord = entry.runtime_data
+    coord._last_site_energy_fetch = time.monotonic() - 60 * 60
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+
+    assert _count_site_quantity_calls(mock_comwatt_client) == 2
+    assert hass.states.get("sensor.home_production_total_energy").state == "100.0"
