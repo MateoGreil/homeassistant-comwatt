@@ -35,7 +35,8 @@ SWITCH_NATURE = ("POWER_SWITCH", "RELAY")
 
 # API key in `get_site_time_series()["<key>"]` → our internal key.
 # Rate fields are 0-1 ratios (multiplied by 100 downstream to render as %);
-# the rest are Wh deltas for the last hour bucket.
+# the rest are instantaneous site power in W (FLOW series sampled ~2 min,
+# last sample taken) — not hourly Wh deltas.
 SITE_TIME_SERIES_KEYS: dict[str, str] = {
     "productions": "production",
     "consumptions": "consumption",
@@ -334,7 +335,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @staticmethod
     def _extract_site_metrics(site_ts: dict[str, Any]) -> dict[str, float | None]:
-        """Pull the latest bucket for every known site metric."""
+        """Pull the latest sample of every known site metric."""
         metrics: dict[str, float | None] = {}
         for api_key, internal_key in SITE_TIME_SERIES_KEYS.items():
             series = site_ts.get(api_key) or []

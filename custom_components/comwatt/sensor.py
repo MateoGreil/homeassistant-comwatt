@@ -40,16 +40,17 @@ def _rate(key: str, friendly_suffix: str) -> ComwattSiteMetricDescription:
     )
 
 
-def _delta(key: str, friendly_suffix: str) -> ComwattSiteMetricDescription:
-    """Per-hour energy delta, not a cumulative counter — no `device_class=ENERGY`.
+def _power(key: str, friendly_suffix: str) -> ComwattSiteMetricDescription:
+    """Instantaneous site power in watts (FLOW series, last ~2 min sample).
 
-    HA rejects `ENERGY` paired with `MEASUREMENT`; use the `{device}_total_energy`
-    entity for Energy-dashboard-quality cumulative figures.
+    Not an energy figure: the `FLOW` aggregation returns a power series, so
+    cumulative energy lives in the `{device}_total_energy` entities instead.
     """
     return ComwattSiteMetricDescription(
         key=key,
         friendly_suffix=friendly_suffix,
-        native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
     )
 
@@ -60,12 +61,12 @@ SITE_METRICS: tuple[ComwattSiteMetricDescription, ...] = (
     _rate("auto_consumption_rate", "Auto Consumption Rate"),
     _rate("injection_rate", "Injection Rate"),
     _rate("withdrawal_rate", "Withdrawal Rate"),
-    _delta("production", "Production"),
-    _delta("consumption", "Consumption"),
-    _delta("injection", "Injection"),
-    _delta("withdrawal", "Withdrawal"),
-    _delta("charge", "Charge"),
-    _delta("discharge", "Discharge"),
+    _power("production", "Production"),
+    _power("consumption", "Consumption"),
+    _power("injection", "Injection"),
+    _power("withdrawal", "Withdrawal"),
+    _power("charge", "Charge"),
+    _power("discharge", "Discharge"),
 )
 
 

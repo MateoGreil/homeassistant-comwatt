@@ -141,13 +141,68 @@ async def test_site_metrics_expose_every_known_key(
     assert state("auto_consumption_rate") == "95.0"
     assert state("injection_rate") == "5.0"
     assert state("withdrawal_rate") == "0.0"
-    # Delta sensors: latest bucket as-is, unit Wh.
+    # Power sensors: latest sample as-is, unit W.
     assert state("production") == "1200.0"
     assert state("consumption") == "800.0"
     assert state("injection") == "200.0"
     assert state("withdrawal") == "0.0"
     assert state("charge") == "100.0"
     assert state("discharge") == "0.0"
+
+
+async def test_site_power_metrics_have_power_unit(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Site flow metrics are instantaneous watts, not hourly Wh deltas.
+
+    Live API verification (2026-08-15): the FLOW/HOUR series is sampled ~2 min
+    and mirrors the device power sensors, so the value is a site power reading.
+    """
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.return_value = {
+        "productions": [0.0, 4507.0],
+        "consumptions": [800.0, 800.0],
+        "injections": [0.0, 200.0],
+        "withdrawals": [0.0, 0.0],
+        "charges": [0.0, 100.0],
+        "discharges": [0.0, 0.0],
+    }
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    for slug in ("production", "consumption", "injection", "withdrawal", "charge", "discharge"):
+        state = hass.states.get(f"sensor.home_{slug}")
+        assert state is not None
+        assert state.attributes["unit_of_measurement"] == UnitOfPower.WATT
+        assert state.attributes["device_class"] == SensorDeviceClass.POWER
+        assert state.attributes["state_class"] == SensorStateClass.MEASUREMENT
+
+    assert hass.states.get("sensor.home_production").state == "4507.0"
+    assert hass.states.get("sensor.home_consumption").state == "800.0"
+
+
+async def test_site_rates_still_percent(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Rate sensors keep the % unit and the ×100 scaling while flow metrics become watts."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.return_value = {
+        "productions": [4507.0],
+        "withdrawalRates": [0.0116],
+    }
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.home_withdrawal_rate")
+    assert state is not None
+    assert state.attributes["unit_of_measurement"] == PERCENTAGE
+    assert float(state.state) == pytest.approx(1.16)
 
 
 async def test_power_sensor_reads_latest_value(
