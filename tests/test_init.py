@@ -202,6 +202,7 @@ async def test_energy_state_saved_on_final_write(
             "data": {
                 "23593": {
                     "live_total_wh": 1000.0,
+                    "published_total_wh": 1100.0,
                     "total_wh": 0.0,
                     "live_by_hour": {},
                     "last_bucket_ts": None,
@@ -238,6 +239,7 @@ async def test_energy_state_saved_on_final_write(
     assert raw is not None
     assert "23593" in raw["data"]
     assert raw["data"]["23593"]["live_total_wh"] == 1010.5
+    assert raw["data"]["23593"]["published_total_wh"] == 1100.0
 
 
 async def test_energy_state_saved_on_unload(
@@ -253,6 +255,7 @@ async def test_energy_state_saved_on_unload(
             "data": {
                 "23593": {
                     "live_total_wh": 2000.0,
+                    "published_total_wh": 2100.0,
                     "total_wh": 0.0,
                     "live_by_hour": {},
                     "last_bucket_ts": None,
@@ -289,6 +292,7 @@ async def test_energy_state_saved_on_unload(
     assert raw is not None
     assert "23593" in raw["data"]
     assert raw["data"]["23593"]["live_total_wh"] == 2007.25
+    assert raw["data"]["23593"]["published_total_wh"] == 2100.0
 
 
 async def test_migrates_stale_wh_statistics(

@@ -176,9 +176,8 @@ class ComwattPowerSensor(ComwattSensor):
 class ComwattEnergySensor(ComwattSensor):
     """Accumulated energy total in watt-hours.
 
-    The running total lives in the coordinator so the bookkeeping survives
-    every poll; it still resets on HA restart — that's finding H4, tracked
-    separately.
+    The running total lives in the coordinator and its published high-water mark
+    is restored from persistent storage across HA restarts.
     """
 
     _attr_native_unit_of_measurement = UnitOfEnergy.WATT_HOUR
