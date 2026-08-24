@@ -63,17 +63,26 @@ Si des capteurs restent `unavailable` plus de quelques minutes, consultez le jou
 
 ## Utilisation
 
-Une fois configurée, vous disposez de capteurs d'énergie et de puissance par appareil, utilisables dans votre tableau de bord ou dans des automatisations. Les capteurs `*_total_energy` s'ajoutent au **tableau de bord Énergie** (Paramètres → Tableaux de bord → Énergie).
+Une fois configurée, vous disposez de capteurs d'énergie et de puissance par site et par appareil, utilisables dans votre tableau de bord ou dans des automatisations. En résumé :
+
+| Niveau | Puissance (W) | Énergie (Wh) |
+|---|---|---|
+| Site | `Production`, `Consumption`, `Injection`, `Withdrawal`, `Charge`, `Discharge` — instantanée, actualisée ~toutes les 2 min | `*_total_energy` — cumulée, avance par pas horaires |
+| Appareil | `Power` — temps réel via WebSocket | `Total Energy` — temps réel, réconciliée toutes les heures avec le serveur |
+
+La référence complète — unités, cadences de mise à jour, capteurs de taux, capacités et limites du flux WebSocket — se trouve dans [docs/sensors-fr.md](https://github.com/MateoGreil/homeassistant-comwatt/blob/main/docs/sensors-fr.md).
+
+Les capteurs `*_total_energy` s'ajoutent au **tableau de bord Énergie** (Paramètres → Tableaux de bord → Énergie). N'utilisez **pas** les capteurs de puissance (W) à cet endroit — ce sont des mesures instantanées, pas de l'énergie.
 
 ## Fonctionnalités
 
 Cette intégration peut gérer :
 
-- Consommation électrique de l'appareil
-- Consommation énergétique de l'appareil
-- Consommation électrique du réseau entrée/sortie
-- Consommation énergétique du réseau entrée/sortie
-- Capacité de commutation de l'appareil
+- La puissance instantanée par site : production, consommation, injection réseau, soutirage réseau, charge et décharge batterie
+- Les totaux d'énergie cumulée par site (production, consommation, injection, soutirage, charge, décharge)
+- Les taux d'autoproduction / autoconsommation / injection / soutirage par site
+- La puissance par appareil en temps réel (flux WebSocket) et l'énergie cumulée par appareil
+- La commande des appareils exposant une capacité `POWER_SWITCH` / `RELAY`
 
 ## Contributions
 
