@@ -178,12 +178,12 @@ async def test_consume_swallows_batch_errors_and_keeps_running(
 
     calls: list[int] = []
 
-    def fake_process_batch(batch: list[Any]) -> None:
+    async def fake_process_batch(batch: list[Any]) -> None:
         calls.append(len(batch))
         if len(calls) == 1:
             raise RuntimeError("boom")
 
-    manager._process_batch = fake_process_batch
+    manager._async_process_batch = fake_process_batch
 
     manager._consumer_task = asyncio.create_task(manager._consume())
 

@@ -1,6 +1,7 @@
 """DataUpdateCoordinator for the Comwatt integration."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import logging
@@ -73,6 +74,7 @@ class _EnergyState:
     last_power_w: float | None = None
     last_power_t: float | None = None
     live_total_wh: float | None = None
+    published_total_wh: float | None = None
     live_by_hour: dict[datetime, float] = field(default_factory=dict)
 
 
@@ -198,6 +200,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._password: str = entry.data["password"]
         self._authenticated = False
         self._energy_store: Store = Store(hass, _STORE_VERSION, _STORE_KEY)
+        self._energy_lock = asyncio.Lock()
         self._energy_state: dict[str, _EnergyState] = {}
         self._site_energy_state: dict[str | int, _SiteEnergyState] = {}
         self._last_site_energy_fetch: float | None = None
@@ -210,20 +213,23 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch everything; the client re-authenticates expired sessions itself."""
-        try:
-            data = await self.hass.async_add_executor_job(self._fetch_all)
-        except ComwattAuthError as err:
-            raise ConfigEntryAuthFailed(str(err)) from err
-        except Exception as err:  # noqa: BLE001
-            raise UpdateFailed(str(err)) from err
-        await self.async_save_energy_state()
-        return data
+        async with self._energy_lock:
+            try:
+                data = await self.hass.async_add_executor_job(self._fetch_all)
+            except ComwattAuthError as err:
+                raise ConfigEntryAuthFailed(str(err)) from err
+            except Exception as err:  # noqa: BLE001
+                raise UpdateFailed(str(err)) from err
+            await self._async_save_energy_state()
+            self._patch_device_energy_snapshot(data)
+            return data
 
     async def async_load_energy_state(self) -> None:
         """Restore per-device and per-site energy state from HA storage.
 
-        Device state populates live_total_wh (and its supporting fields) so the
-        ∫W·dt stream accumulator continues from the last persisted value rather
+        Device state populates live_total_wh and the published energy high-water
+        mark (and their supporting fields) so the ∫W·dt stream accumulator continues
+        from the last persisted value rather
         than reseeding from a 24-hour bucket sum on every HA restart.  Site
         state (under the reserved `__sites__` key) restores the cumulative
         totals and their high-water mark so the `*_total_energy` site sensors
@@ -258,6 +264,13 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             state = self._energy_state.setdefault(device_id, _EnergyState())
             state.live_total_wh = state_dict.get("live_total_wh")
             state.total_wh = state_dict.get("total_wh", 0.0)
+            self._publish_device_energy(
+                device_id, state_dict.get("published_total_wh")
+            )
+            self._publish_device_energy(
+                device_id,
+                state.live_total_wh if state.live_total_wh is not None else state.total_wh,
+            )
             state.live_by_hour = {
                 datetime.fromisoformat(k): v
                 for k, v in (state_dict.get("live_by_hour") or {}).items()
@@ -266,10 +279,15 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             state.last_bucket_ts = datetime.fromisoformat(raw_ts) if raw_ts else None
 
     async def async_save_energy_state(self) -> None:
+        async with self._energy_lock:
+            await self._async_save_energy_state()
+
+    async def _async_save_energy_state(self) -> None:
         """Persist per-device and per-site energy state to HA storage after each poll.
 
         Only fields that survive a restart are saved: live_total_wh,
-        live_by_hour, last_bucket_ts, total_wh for devices; totals and
+        published_total_wh, live_by_hour, last_bucket_ts, total_wh for devices;
+        totals and
         last_bucket_ts for sites, nested under the reserved `__sites__` key so
         site ids never collide with device ids in the store's `data` dict.
         Monotonic-clock fields (last_power_w, last_power_t, last_fetched_at,
@@ -279,8 +297,13 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         data: dict[str, Any] = {}
         for device_id, state in self._energy_state.items():
+            self._publish_device_energy(
+                device_id,
+                state.live_total_wh if state.live_total_wh is not None else state.total_wh,
+            )
             data[str(device_id)] = {
                 "live_total_wh": state.live_total_wh,
+                "published_total_wh": state.published_total_wh,
                 "total_wh": state.total_wh,
                 "live_by_hour": {
                     k.isoformat(): v for k, v in state.live_by_hour.items()
@@ -299,6 +322,23 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for site_id, state in self._site_energy_state.items()
         }
         await self._energy_store.async_save({"version": _STORE_VERSION, "data": data})
+
+    def _patch_device_energy_snapshot(self, data: dict[str, Any]) -> None:
+        for device_id, metrics in data.get("devices", {}).items():
+            state = self._energy_state.get(device_id)
+            if state is None:
+                continue
+            published_total = self._publish_device_energy(
+                device_id, state.live_total_wh
+            )
+            if published_total is not None:
+                metrics["energy"] = published_total
+
+    async def async_integrate_live_energy(
+        self, device_powers: dict[str, float]
+    ) -> None:
+        async with self._energy_lock:
+            self.integrate_live_energy(device_powers)
 
     # ------------------------------------------------------------------
     # Actions triggered by entities (executor-bound)
@@ -383,7 +423,9 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for device_id, metrics in devices_data.items():
             state = self._energy_state.get(device_id)
             if state is not None and state.live_total_wh is not None:
-                metrics["energy"] = state.live_total_wh
+                metrics["energy"] = self._publish_device_energy(
+                    device_id, state.live_total_wh
+                )
 
         return {
             "sites": sites_data,
@@ -539,12 +581,23 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 yield device
 
+    def _publish_device_energy(
+        self, device_id: str | int, internal_total_wh: float | None
+    ) -> float | None:
+        state = self._energy_state.setdefault(device_id, _EnergyState())
+        if internal_total_wh is not None and (
+            state.published_total_wh is None
+            or internal_total_wh > state.published_total_wh
+        ):
+            state.published_total_wh = internal_total_wh
+        return state.published_total_wh
+
     def integrate_live_energy(self, device_powers: dict[str, float]) -> None:
         """Accumulate trapezoidal ∫W·dt into each device's live energy total.
 
         Called by the stream manager after it computes per-device power for a
         burst. Seeds `live_total_wh` from the poll's `total_wh` on the first
-        burst, then accumulates. Also writes the live total into
+        burst, then accumulates. Also writes the published total into
         `self.data["devices"][id]["energy"]` and buckets the delta by UTC hour
         for Slice 5 reconciliation.
         """
@@ -563,9 +616,12 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     state.live_by_hour[hour] = state.live_by_hour.get(hour, 0.0) + delta_wh
             state.last_power_w = power_w
             state.last_power_t = now_mono
+            published_total = self._publish_device_energy(
+                device_id, state.live_total_wh
+            )
             dev = self.data.get("devices", {}).get(device_id)
             if dev is not None:
-                dev["energy"] = state.live_total_wh
+                dev["energy"] = published_total
 
     def _fetch_device_metrics(self, device: dict[str, Any]) -> dict[str, float | None]:
         """Fetch latest power reading and update the running energy total.
@@ -704,6 +760,10 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             if stale_hour < hwm_hour:
                                 state.live_by_hour.pop(stale_hour, None)
 
+        energy = self._publish_device_energy(
+            device_id,
+            state.live_total_wh if state.live_total_wh is not None else energy,
+        )
         return {"power": power, "energy": energy}
 
     @staticmethod

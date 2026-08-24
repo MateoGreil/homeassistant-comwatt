@@ -1,6 +1,7 @@
 """Tests for the Comwatt DataUpdateCoordinator."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import UTC, datetime
@@ -279,7 +280,7 @@ async def test_fetch_device_metrics_returns_live_total_when_stream_active(
     result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
     assert _count_quantity_calls(mock_comwatt_client) == calls_before + 1
     assert state.live_total_wh == 1234.0 + (500.0 - 510.0)
-    assert result == {"power": 42.0, "energy": 1234.0 + (500.0 - 510.0)}
+    assert result == {"power": 42.0, "energy": 1234.0}
 
 
 async def test_reconcile_server_bucket_corrects_live_total(
@@ -1098,6 +1099,271 @@ async def test_poll_cycle_persists_state(
     assert raw["data"]["23593"]["live_total_wh"] == 77777.0
 
 
+async def test_negative_reconciliation_keeps_published_energy_monotonic(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [400.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 1000.0
+    state.published_total_wh = 1000.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 510.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 890.0
+    assert state.published_total_wh == 1000.0
+    assert result == {"power": 42.0, "energy": 1000.0}
+
+
+async def test_positive_reconciliation_advances_published_energy(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": ["2026-07-14T11:00:00.000+0000"], "values": [530.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 1000.0
+    state.published_total_wh = 1000.0
+    state.last_bucket_ts = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    state.live_by_hour = {datetime(2026, 7, 14, 11, 0, tzinfo=UTC): 500.0}
+    state.last_fetched_at = time.monotonic() - 60 * 60
+
+    result = await hass.async_add_executor_job(coord._fetch_device_metrics, DEVICE)
+
+    assert state.live_total_wh == 1030.0
+    assert state.published_total_wh == 1030.0
+    assert result == {"power": 42.0, "energy": 1030.0}
+
+
+async def test_stream_keeps_high_water_mark_while_internal_energy_catches_up(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_site_time_series.return_value = {"autoproductionRates": []}
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={"timestamps": [], "values": []},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._energy_state[DEVICE["id"]]
+    state.live_total_wh = 90.0
+    state.published_total_wh = 100.0
+    state.last_power_w = 42.0
+    state.last_power_t = time.monotonic() + 60.0
+    coord.data["devices"][DEVICE["id"]]["energy"] = 100.0
+
+    coord.integrate_live_energy({DEVICE["id"]: 42.0})
+
+    assert state.live_total_wh == 90.0
+    assert state.published_total_wh == 100.0
+    assert coord.data["devices"][DEVICE["id"]]["energy"] == 100.0
+
+
+async def test_restore_missing_published_energy_uses_live_total(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    store = Store(hass, _STORE_VERSION, _STORE_KEY)
+    await store.async_save(
+        {
+            "version": 1,
+            "data": {
+                "23593": {
+                    "live_total_wh": 42506.0,
+                    "total_wh": 0.0,
+                    "live_by_hour": {},
+                    "last_bucket_ts": None,
+                }
+            },
+        }
+    )
+
+    entry = _make_entry(hass)
+    coord = ComwattCoordinator(hass, entry)
+    await coord.async_load_energy_state()
+
+    state = coord._energy_state[23593]
+    assert state.live_total_wh == 42506.0
+    assert state.published_total_wh == 42506.0
+
+
+async def test_restore_published_high_water_survives_reload_until_live_catches_up(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    first_coord = ComwattCoordinator(hass, _make_entry(hass))
+    first_coord._energy_state[23593] = _EnergyState(
+        live_total_wh=90.0,
+        published_total_wh=100.0,
+    )
+    await first_coord.async_save_energy_state()
+
+    entry = _make_entry(hass)
+    restored_coord = ComwattCoordinator(hass, entry)
+    await restored_coord.async_load_energy_state()
+
+    state = restored_coord._energy_state[23593]
+    assert state.live_total_wh == 90.0
+    assert state.published_total_wh == 100.0
+
+    mock_comwatt_client.get_device_ts_time_ago.return_value = {
+        "values": [42.0],
+        "timestamps": [1],
+    }
+    state.last_fetched_at = time.monotonic()
+    restored_coord.data = {"devices": {23593: {"energy": 90.0}}}
+
+    first_result = await hass.async_add_executor_job(
+        restored_coord._fetch_device_metrics, DEVICE_23593
+    )
+
+    assert first_result["energy"] == 100.0
+    assert state.live_total_wh == 90.0
+    assert state.published_total_wh == 100.0
+
+    state.last_power_w = 0.0
+    state.last_power_t = time.monotonic() - 3600.0
+    restored_coord.integrate_live_energy({23593: 20.0})
+
+    assert state.live_total_wh == pytest.approx(100.0)
+    assert state.published_total_wh == pytest.approx(100.0)
+    assert restored_coord.data["devices"][23593]["energy"] == pytest.approx(100.0)
+
+
+async def test_restore_missing_live_total_uses_nonzero_total_as_published_energy(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    store = Store(hass, _STORE_VERSION, _STORE_KEY)
+    await store.async_save(
+        {
+            "version": 1,
+            "data": {
+                "23593": {
+                    "total_wh": 321.0,
+                    "live_by_hour": {},
+                    "last_bucket_ts": None,
+                },
+                "23594": {
+                    "live_total_wh": None,
+                    "total_wh": 654.0,
+                    "live_by_hour": {},
+                    "last_bucket_ts": None,
+                },
+            },
+        }
+    )
+
+    coord = ComwattCoordinator(hass, _make_entry(hass))
+    await coord.async_load_energy_state()
+
+    assert coord._energy_state[23593].live_total_wh is None
+    assert coord._energy_state[23593].published_total_wh == 321.0
+    assert coord._energy_state[23594].live_total_wh is None
+    assert coord._energy_state[23594].published_total_wh == 654.0
+
+
+async def test_save_persists_published_energy(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    entry = _make_entry(hass)
+    coord = ComwattCoordinator(hass, entry)
+    coord._energy_state[23593] = _EnergyState(
+        live_total_wh=890.0,
+        published_total_wh=1000.0,
+    )
+
+    await coord.async_save_energy_state()
+
+    store = Store(hass, _STORE_VERSION, _STORE_KEY)
+    raw = await store.async_load()
+    assert raw["data"]["23593"]["published_total_wh"] == 1000.0
+
+
+async def test_refresh_serializes_stream_energy_and_patches_current_snapshot(
+    hass: HomeAssistant,
+    mock_comwatt_client: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coord = ComwattCoordinator(hass, _make_entry(hass))
+    coord.data = {
+        "sites": {},
+        "devices": {23593: {"power": None, "energy": 80.0}},
+        "switches": {},
+    }
+    coord._energy_state[23593] = _EnergyState(
+        live_total_wh=90.0,
+        published_total_wh=100.0,
+        last_power_w=0.0,
+        last_power_t=time.monotonic() - 3600.0,
+    )
+    refresh_data = {
+        "sites": {},
+        "devices": {23593: {"power": None, "energy": 90.0}},
+        "switches": {},
+    }
+    monkeypatch.setattr(coord, "_fetch_all", lambda: refresh_data)
+
+    save_started = asyncio.Event()
+    release_save = asyncio.Event()
+
+    async def blocked_save(_data: dict[str, Any]) -> None:
+        save_started.set()
+        await release_save.wait()
+
+    monkeypatch.setattr(coord._energy_store, "async_save", blocked_save)
+    committed_energies: list[float] = []
+    monkeypatch.setattr(
+        coord,
+        "async_update_listeners",
+        lambda: committed_energies.append(coord.data["devices"][23593]["energy"]),
+    )
+
+    refresh_task = asyncio.create_task(coord._async_refresh(log_failures=False))
+    await save_started.wait()
+
+    stream_task = asyncio.create_task(
+        coord.async_integrate_live_energy({23593: 200.0})
+    )
+    await asyncio.sleep(0)
+    assert stream_task.done() is False
+
+    release_save.set()
+    await refresh_task
+    await stream_task
+
+    assert committed_energies == [100.0]
+    assert coord._energy_state[23593].published_total_wh == pytest.approx(190.0)
+    assert coord.data["devices"][23593]["energy"] == pytest.approx(190.0)
+
+
 async def test_first_install_no_store_is_unit_safe(
     hass: HomeAssistant, mock_comwatt_client: MagicMock
 ) -> None:
@@ -1154,6 +1420,7 @@ async def test_store_schema_versioned(
     assert "live_by_hour" in device_data
     assert "last_bucket_ts" in device_data
     assert "total_wh" in device_data
+    assert "published_total_wh" in device_data
 
 
 async def test_round_trip_live_by_hour_iso(
@@ -1183,6 +1450,7 @@ async def test_round_trip_live_by_hour_iso(
 
     state2 = coord2._energy_state[23593]
     assert state2.live_total_wh == 12.34
+    assert state2.published_total_wh == 12.34
     assert state2.total_wh == 5.0
     assert state2.live_by_hour == {hour: 12.34}
     assert state2.last_bucket_ts == last_ts

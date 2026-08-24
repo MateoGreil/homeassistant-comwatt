@@ -187,14 +187,26 @@ class ComwattStreamManager:
                         batch.append(self._queue.get_nowait())
                     except asyncio.QueueEmpty:
                         break
-                self._process_batch(batch)
+                await self._async_process_batch(batch)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 _LOGGER.exception("failed to process stream batch")
 
-    def _process_batch(self, batch: list[Any]) -> None:
+    async def _async_process_batch(self, batch: list[Any]) -> None:
         """Apply a drained batch to the coordinator, notifying on any change."""
+        device_powers = _compute_device_powers(batch, self._coordinator.capacity_map)
+        changed = _apply_power_updates(device_powers, self._coordinator.data["devices"])
+        await self._coordinator.async_integrate_live_energy(device_powers)
+        changed |= _apply_switch_updates(
+            batch,
+            self._coordinator.capacity_map,
+            self._coordinator.data["switches"],
+        )
+        if changed:
+            self._coordinator.async_update_listeners()
+
+    def _process_batch(self, batch: list[Any]) -> None:
         device_powers = _compute_device_powers(batch, self._coordinator.capacity_map)
         changed = _apply_power_updates(device_powers, self._coordinator.data["devices"])
         self._coordinator.integrate_live_energy(device_powers)
