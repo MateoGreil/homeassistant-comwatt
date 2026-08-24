@@ -63,17 +63,26 @@ If sensors show `unavailable` for more than a few minutes, check the Home Assist
 
 ## Usage
 
-Once set up, you have sensors for energy and power per device you can add to your dashboard or use in automations. The `*_total_energy` sensors can be used in the **Energy dashboard** (Settings → Dashboards → Energy).
+Once set up, you have sensors for energy and power per site and per device, that you can add to your dashboard or use in automations. A short version of the sensor semantics:
+
+| Level | Power (W) | Energy (Wh) |
+|---|---|---|
+| Site | `Production`, `Consumption`, `Injection`, `Withdrawal`, `Charge`, `Discharge` — instantaneous, refreshed ~every 2 min | `*_total_energy` — cumulative, advances in hourly steps |
+| Device | `Power` — real time via WebSocket | `Total Energy` — real time, reconciled hourly against the server |
+
+The full reference — units, update cadences, rate sensors, WebSocket stream capabilities and limits — lives in [docs/sensors.md](https://github.com/MateoGreil/homeassistant-comwatt/blob/main/docs/sensors.md).
+
+The `*_total_energy` sensors can be used in the **Energy dashboard** (Settings → Dashboards → Energy). Do **not** use the power (W) sensors there — they are instantaneous measurements, not energy.
 
 ## Features
 
-This integration can handle :
+This integration can handle:
 
-- Power consumption of device
-- Energy consumption of device
-- Power consumption of network in/out
-- Energy consumption of network in/out
-- Switch capacity of device
+- Per-site instantaneous power: production, consumption, grid injection, grid withdrawal, battery charge and discharge
+- Per-site cumulative energy totals (production, consumption, injection, withdrawal, charge, discharge)
+- Per-site autoproduction / autoconsumption / injection / withdrawal rates
+- Real-time per-device power (WebSocket stream) and per-device cumulative energy
+- Switch control of devices exposing a `POWER_SWITCH` / `RELAY` capacity
 
 ## Contributions
 
