@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 _STORE_VERSION = 1
+_STORE_MINOR_VERSION = 2
 _STORE_KEY = "comwatt.energy_state"
 
 UPDATE_INTERVAL = timedelta(minutes=2)
@@ -87,10 +88,16 @@ class _SiteEnergyState:
     each bucket newer than `last_bucket_ts` is added exactly once, so the
     counters only ever advance. The first fetch seeds them with the whole
     8-day request window so the Energy dashboard immediately shows history.
+    `folded_buckets` is a per-bucket ledger of what each fold actually added
+    (bucket UTC ISO key → metric → folded Wh): it lets a completed bucket the
+    server later revised upward be caught up by delta. Metrics skipped at fold
+    time (None or negative) get no entry, so they never reconcile from
+    nothing.
     """
 
     totals: dict[str, float] = field(default_factory=dict)
     last_bucket_ts: datetime | None = None
+    folded_buckets: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 def _parse_bucket_ts(ts: Any) -> datetime | None:
@@ -199,7 +206,9 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._username: str = entry.data["username"]
         self._password: str = entry.data["password"]
         self._authenticated = False
-        self._energy_store: Store = Store(hass, _STORE_VERSION, _STORE_KEY)
+        self._energy_store: Store = Store(
+            hass, _STORE_VERSION, _STORE_KEY, minor_version=_STORE_MINOR_VERSION
+        )
         self._energy_lock = asyncio.Lock()
         self._energy_state: dict[str, _EnergyState] = {}
         self._site_energy_state: dict[str | int, _SiteEnergyState] = {}
@@ -232,8 +241,12 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         from the last persisted value rather
         than reseeding from a 24-hour bucket sum on every HA restart.  Site
         state (under the reserved `__sites__` key) restores the cumulative
-        totals and their high-water mark so the `*_total_energy` site sensors
-        continue from the persisted totals without re-folding old buckets.
+        totals, their high-water mark, and the `folded_buckets` ledger so the
+        `*_total_energy` site sensors continue from the persisted totals
+        without re-folding old buckets and upward-revised buckets still catch
+        up after a restart.  A site entry without the ledger key (persisted
+        before store minor 2) restores an empty ledger, so drift that predates
+        the ledger stays frozen.
         Monotonic clock fields (last_power_w, last_power_t, last_fetched_at,
         _last_site_energy_fetch) are not persisted and stay at their zero/None
         defaults.  Store keys are strings; int site ids are normalized back to
@@ -253,6 +266,15 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             state.totals = dict(site_dict.get("totals") or {})
             raw_ts = site_dict.get("last_bucket_ts")
             state.last_bucket_ts = datetime.fromisoformat(raw_ts) if raw_ts else None
+            state.folded_buckets = {
+                bucket: {
+                    metric: value
+                    for metric, value in inner.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                }
+                for bucket, inner in (site_dict.get("folded_buckets") or {}).items()
+                if isinstance(inner, dict)
+            }
         for str_id, state_dict in data.items():
             if str_id == _SITE_ENERGY_STORE_KEY:
                 continue
@@ -286,10 +308,11 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Persist per-device and per-site energy state to HA storage after each poll.
 
         Only fields that survive a restart are saved: live_total_wh,
+        Only fields that survive a restart are saved: live_total_wh,
         published_total_wh, live_by_hour, last_bucket_ts, total_wh for devices;
-        totals and
-        last_bucket_ts for sites, nested under the reserved `__sites__` key so
-        site ids never collide with device ids in the store's `data` dict.
+        totals, last_bucket_ts and the folded_buckets ledger for sites, nested
+        under the reserved `__sites__` key so site ids never collide with
+        device ids in the store's `data` dict.
         Monotonic-clock fields (last_power_w, last_power_t, last_fetched_at,
         _last_site_energy_fetch) are not restorable and are omitted.
         Store JSON keys are always strings; device_id ints are converted at this
@@ -318,6 +341,10 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     state.last_bucket_ts.isoformat() if state.last_bucket_ts else None
                 ),
                 "totals": dict(state.totals),
+                "folded_buckets": {
+                    bucket: dict(inner)
+                    for bucket, inner in state.folded_buckets.items()
+                },
             }
             for site_id, state in self._site_energy_state.items()
         }
@@ -497,6 +524,24 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         values are corrupt upstream data — folding them would push a
         TOTAL_INCREASING sensor backwards and break HA statistics — so they are
         rejected with a warning and the counter keeps its previous value.
+
+        The server sometimes revises a completed bucket upward after
+        publication (issue #51). Every folded value is recorded in the site's
+        `folded_buckets` ledger (bucket UTC ISO key → metric → folded Wh).
+        After the fold loop, each bucket of the response that has ledger
+        entries is re-examined per metric: when the server now reports strictly
+        more than what was folded, the positive delta is added to the counter
+        and the ledger entry is raised to the new server value, which makes the
+        catch-up idempotent on the next fetch. Non-positive deltas — including
+        downward revisions, negative server values (corrupt data), metrics that
+        now report None, and metrics that never had a ledger entry — leave both
+        the counter and the ledger entry untouched, so each folded value is a
+        floor and the counters stay monotone. Ledger entries whose bucket no
+        longer appears in the response (the rolling 8-day window has moved on)
+        are pruned to keep the ledger bounded, but only when the response
+        yielded at least one parseable bucket: an empty or entirely
+        unparseable response leaves the ledger untouched, so those buckets can
+        still reconcile once the server responds normally again.
         """
         state = self._site_energy_state.setdefault(site_id, _SiteEnergyState())
         for metric, total in state.totals.items():
@@ -512,6 +557,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         timestamps = site_ts.get("timestamps")
         if not isinstance(timestamps, list):
             return True
+        response_buckets: list[tuple[int, datetime]] = []
         for index, ts in enumerate(timestamps):
             bucket_dt = _parse_bucket_ts(ts)
             if bucket_dt is None:
@@ -521,8 +567,10 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     site_id,
                 )
                 continue
+            response_buckets.append((index, bucket_dt))
             if state.last_bucket_ts is not None and bucket_dt <= state.last_bucket_ts:
                 continue
+            folded = state.folded_buckets.setdefault(bucket_dt.isoformat(), {})
             for api_key, metric in SITE_ENERGY_BUCKET_KEYS.items():
                 series = site_ts.get(api_key)
                 if not isinstance(series, list) or index >= len(series):
@@ -549,7 +597,47 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     continue
                 state.totals[metric] = state.totals.get(metric, 0.0) + value
+                folded[metric] = value
             state.last_bucket_ts = bucket_dt
+        caught_up_wh = 0.0
+        for index, bucket_dt in response_buckets:
+            folded = state.folded_buckets.get(bucket_dt.isoformat())
+            if not folded:
+                continue
+            for api_key, metric in SITE_ENERGY_BUCKET_KEYS.items():
+                folded_value = folded.get(metric)
+                if folded_value is None:
+                    continue
+                series = site_ts.get(api_key)
+                if not isinstance(series, list) or index >= len(series):
+                    continue
+                server_now = series[index]
+                if server_now is None or server_now < 0:
+                    continue
+                delta = server_now - folded_value
+                if delta <= 0:
+                    continue
+                _LOGGER.debug(
+                    "Catching up revised site bucket %s metric %s for site %s: +%s Wh",
+                    bucket_dt.isoformat(),
+                    metric,
+                    site_id,
+                    delta,
+                )
+                state.totals[metric] = state.totals.get(metric, 0.0) + delta
+                folded[metric] = server_now
+                caught_up_wh += delta
+        if caught_up_wh > 0:
+            _LOGGER.debug(
+                "Caught up %s Wh of revised site buckets for site %s",
+                caught_up_wh,
+                site_id,
+            )
+        if response_buckets:
+            response_keys = {dt.isoformat() for _, dt in response_buckets}
+            for bucket_key in list(state.folded_buckets):
+                if bucket_key not in response_keys:
+                    del state.folded_buckets[bucket_key]
         for metric, total in state.totals.items():
             site_metrics[f"{metric}_total_energy"] = total
         return True
