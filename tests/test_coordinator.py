@@ -17,7 +17,12 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from homeassistant.helpers.storage import Store
 
 from custom_components.comwatt.const import DOMAIN
-from custom_components.comwatt.coordinator import ComwattCoordinator, _EnergyState, _parse_bucket_ts
+from custom_components.comwatt.coordinator import (
+    ComwattCoordinator,
+    _EnergyState,
+    _STORE_MINOR_VERSION,
+    _parse_bucket_ts,
+)
 
 ENTRY_DATA = {"username": "user@example.com", "password": "secret"}
 SITE = {"id": "site-1", "name": "Home", "siteKind": "RESIDENTIAL"}
@@ -1726,3 +1731,394 @@ async def test_site_energy_short_series_does_not_corrupt_other_metrics(
     assert "consumption" in message
     assert "site-1" in message
     assert "2026-08-15T11:00:00+00:00" in message
+
+
+def _sequential_site_ts_side_effect(*quantities: dict[str, Any]) -> Any:
+    """Route get_site_time_series; each QUANTITY call returns the next response."""
+
+    remaining = list(quantities)
+
+    def _route(site_id: str, measure_kind: str, *rest: object) -> dict[str, Any]:
+        if measure_kind == "QUANTITY":
+            return remaining.pop(0)
+        return {"autoproductionRates": []}
+
+    return _route
+
+
+async def _rewound_site_refresh(
+    coord: ComwattCoordinator, hass: HomeAssistant
+) -> None:
+    """Reopen the ~55-min site energy gate, then run one coordinator refresh."""
+    coord._last_site_energy_fetch = time.monotonic() - 60 * 60
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+
+
+async def test_site_bucket_fold_records_ledger(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Folding a new bucket records what was actually folded, per (bucket,
+    metric), in the site's folded_buckets ledger (bucket UTC ISO key → metric
+    → folded Wh). A metric with no series for that bucket gets no entry, so
+    the ledger never invents a baseline to reconcile from."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _site_ts_side_effect(
+        {
+            "timestamps": ["2026-08-15T10:00:00.000+0000"],
+            "productions": [100.0],
+        }
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    state = coord._site_energy_state["site-1"]
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+    assert state.folded_buckets == {
+        "2026-08-15T10:00:00+00:00": {"production": 100.0}
+    }
+
+
+async def test_site_bucket_upward_revision_caught_up_idempotently(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A completed bucket the server revised upward after publication (issue
+    #51) is caught up by delta exactly once: the positive delta is added to the
+    total and the ledger entry is raised to the new server value, so the next
+    fetch of the same response computes delta 0 and adds nothing. Each catch-up
+    logs at debug, plus one per-site summary with the total Wh caught up."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _sequential_site_ts_side_effect(
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [100.0]},
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [110.0]},
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [110.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coord = entry.runtime_data
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+
+    with caplog.at_level(logging.DEBUG, logger="custom_components.comwatt.coordinator"):
+        await _rewound_site_refresh(coord, hass)
+
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 110.0
+    state = coord._site_energy_state["site-1"]
+    assert state.folded_buckets["2026-08-15T10:00:00+00:00"]["production"] == 110.0
+    catches = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.DEBUG and "Catching up revised site bucket" in r.getMessage()
+    ]
+    assert len(catches) == 1
+    assert "+10.0" in catches[0].getMessage()
+    summaries = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.DEBUG and "Caught up" in r.getMessage()
+    ]
+    assert len(summaries) == 1
+    assert "10.0" in summaries[0].getMessage()
+
+    await _rewound_site_refresh(coord, hass)
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 110.0
+    assert state.folded_buckets["2026-08-15T10:00:00+00:00"]["production"] == 110.0
+
+
+async def test_site_bucket_downward_revision_ignored_and_floor_enforced(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A downward revision is ignored permanently: neither the total nor the
+    ledger entry moves, so the folded value stays a floor. A later upward
+    re-revision only folds the part above the floor: 100 → 80 → 110 ends at
+    110 Wh (+10), not 130."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _sequential_site_ts_side_effect(
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [100.0]},
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [80.0]},
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [110.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coord = entry.runtime_data
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+
+    await _rewound_site_refresh(coord, hass)
+    state = coord._site_energy_state["site-1"]
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+    assert state.folded_buckets["2026-08-15T10:00:00+00:00"]["production"] == 100.0
+
+    await _rewound_site_refresh(coord, hass)
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 110.0
+    assert state.folded_buckets["2026-08-15T10:00:00+00:00"]["production"] == 110.0
+
+
+async def test_site_revision_reconciles_per_metric(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Reconciliation is per (bucket, metric) independently: when the revised
+    response only carries the productions series (consumptions missing for that
+    bucket), production catches up its delta while consumption keeps its folded
+    total — a metric absent from one series never reconciles."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _sequential_site_ts_side_effect(
+        {
+            "timestamps": ["2026-08-15T10:00:00.000+0000"],
+            "productions": [100.0],
+            "consumptions": [40.0],
+        },
+        {
+            "timestamps": ["2026-08-15T10:00:00.000+0000"],
+            "productions": [130.0],
+        },
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coord = entry.runtime_data
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+    assert coord.data["sites"]["site-1"]["consumption_total_energy"] == 40.0
+
+    await _rewound_site_refresh(coord, hass)
+
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 130.0
+    assert coord.data["sites"]["site-1"]["consumption_total_energy"] == 40.0
+    state = coord._site_energy_state["site-1"]
+    assert state.folded_buckets["2026-08-15T10:00:00+00:00"]["production"] == 130.0
+    assert state.folded_buckets["2026-08-15T10:00:00+00:00"]["consumption"] == 40.0
+
+
+async def test_site_ledger_prunes_buckets_outside_response(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Ledger entries whose bucket no longer appears in the response (the
+    rolling 8-day window moved on) are pruned, keeping the ledger bounded;
+    surviving entries still reconcile upward."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _sequential_site_ts_side_effect(
+        {
+            "timestamps": [
+                "2026-08-15T10:00:00.000+0000",
+                "2026-08-15T11:00:00.000+0000",
+            ],
+            "productions": [100.0, 50.0],
+        },
+        {
+            "timestamps": ["2026-08-15T11:00:00.000+0000"],
+            "productions": [60.0],
+        },
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coord = entry.runtime_data
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 150.0
+    state = coord._site_energy_state["site-1"]
+    assert set(state.folded_buckets) == {
+        "2026-08-15T10:00:00+00:00",
+        "2026-08-15T11:00:00+00:00",
+    }
+
+    await _rewound_site_refresh(coord, hass)
+
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 160.0
+    assert state.folded_buckets == {
+        "2026-08-15T11:00:00+00:00": {"production": 60.0}
+    }
+
+
+async def test_empty_or_unparseable_response_keeps_ledger(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A well-formed 200 response that yields no parseable bucket (timestamps
+    all unparseable, or an empty list) prunes nothing: without a single parsed
+    bucket proving the server window actually moved, the folded_buckets ledger
+    stays untouched so those buckets can still reconcile when the server
+    responds normally again."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _sequential_site_ts_side_effect(
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [100.0]},
+        {"timestamps": ["not-a-timestamp", "also not one"], "productions": [999.0, 999.0]},
+        {"timestamps": [], "productions": []},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coord = entry.runtime_data
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+    state = coord._site_energy_state["site-1"]
+    assert state.folded_buckets == {
+        "2026-08-15T10:00:00+00:00": {"production": 100.0}
+    }
+
+    await _rewound_site_refresh(coord, hass)
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+    assert state.folded_buckets == {
+        "2026-08-15T10:00:00+00:00": {"production": 100.0}
+    }
+
+    await _rewound_site_refresh(coord, hass)
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+    assert state.folded_buckets == {
+        "2026-08-15T10:00:00+00:00": {"production": 100.0}
+    }
+
+
+async def test_site_totals_without_ledger_entries_untouched(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Totals that predate the ledger (no folded_buckets entries, e.g. state
+    restored from a store version that did not persist the ledger) are never
+    reconciled: catch-up only works from a recorded fold and never invents a
+    baseline, so an upward revision leaves the total untouched."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _sequential_site_ts_side_effect(
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [100.0]},
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [150.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coord = entry.runtime_data
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+
+    coord._site_energy_state["site-1"].folded_buckets.clear()
+    await _rewound_site_refresh(coord, hass)
+
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+    assert coord._site_energy_state["site-1"].folded_buckets == {}
+
+
+async def test_site_bucket_ledger_survives_reload_and_catches_up_once(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """The folded_buckets ledger round-trips through the store: a fresh
+    coordinator restores the same buckets/metrics/values, so an upward server
+    revision of an already-folded bucket is caught up exactly once after a
+    reload — without the persisted ledger the total would stay frozen at the
+    folded value, and a double fold would land at 120, not 110."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _sequential_site_ts_side_effect(
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [100.0]},
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [110.0]},
+        {"timestamps": ["2026-08-15T10:00:00.000+0000"], "productions": [110.0]},
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coord = entry.runtime_data
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 100.0
+
+    coord2 = ComwattCoordinator(hass, entry)
+    await coord2.async_load_energy_state()
+    state2 = coord2._site_energy_state["site-1"]
+    assert state2.totals == {"production": 100.0}
+    assert state2.last_bucket_ts == datetime(2026, 8, 15, 10, 0, tzinfo=UTC)
+    assert state2.folded_buckets == {
+        "2026-08-15T10:00:00+00:00": {"production": 100.0}
+    }
+
+    await _rewound_site_refresh(coord2, hass)
+
+    assert coord2.data["sites"]["site-1"]["production_total_energy"] == 110.0
+    assert (
+        coord2._site_energy_state["site-1"].folded_buckets[
+            "2026-08-15T10:00:00+00:00"
+        ]["production"]
+        == 110.0
+    )
+
+    await _rewound_site_refresh(coord2, hass)
+
+    assert coord2.data["sites"]["site-1"]["production_total_energy"] == 110.0
+    assert (
+        coord2._site_energy_state["site-1"].folded_buckets[
+            "2026-08-15T10:00:00+00:00"
+        ]["production"]
+        == 110.0
+    )
+
+
+async def test_old_site_state_without_ledger_loads_empty_ledger(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A site entry persisted before store minor 2 (no `folded_buckets` key)
+    loads without error: totals and last_bucket_ts are restored unchanged and
+    the ledger comes back empty, so pre-existing drift stays frozen."""
+    store = Store(hass, _STORE_VERSION, _STORE_KEY)
+    await store.async_save(
+        {
+            "version": 1,
+            "data": {
+                "__sites__": {
+                    "site-1": {
+                        "totals": {"production": 123.0, "consumption": 45.0},
+                        "last_bucket_ts": "2026-08-15T10:00:00+00:00",
+                    }
+                }
+            },
+        }
+    )
+
+    entry = _make_entry(hass)
+    coord = ComwattCoordinator(hass, entry)
+    await coord.async_load_energy_state()
+
+    state = coord._site_energy_state["site-1"]
+    assert state.totals == {"production": 123.0, "consumption": 45.0}
+    assert state.last_bucket_ts == datetime(2026, 8, 15, 10, 0, tzinfo=UTC)
+    assert state.folded_buckets == {}
+
+
+async def test_site_bucket_ledger_persisted_json_shape(
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+    mock_comwatt_client: MagicMock,
+) -> None:
+    """The persisted site entry carries `folded_buckets` with bucket UTC ISO
+    string keys mapping metric names to floats, and the persisted store
+    envelope is version 1 / minor 2."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _site_ts_side_effect(
+        {
+            "timestamps": ["2026-08-15T10:00:00.000+0000"],
+            "productions": [100.0],
+            "consumptions": [40.0],
+        }
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    store = Store(hass, _STORE_VERSION, _STORE_KEY, minor_version=_STORE_MINOR_VERSION)
+    raw = await store.async_load()
+    assert raw is not None
+    sites_entry = raw["data"]["__sites__"]
+    ledger = sites_entry["site-1"]["folded_buckets"]
+    assert ledger == {"2026-08-15T10:00:00+00:00": {"production": 100.0, "consumption": 40.0}}
+    assert isinstance(ledger["2026-08-15T10:00:00+00:00"]["production"], float)
+
+    envelope = hass_storage[_STORE_KEY]
+    assert envelope["version"] == 1
+    assert envelope["minor_version"] == _STORE_MINOR_VERSION
