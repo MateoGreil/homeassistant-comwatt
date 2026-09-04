@@ -14,10 +14,10 @@
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/MateoGreil/homeassistant-comwatt/issues",
   "requirements": [
-    "comwatt-client==0.4.2",
+    "comwatt-client==0.4.3",
     "websocket-client==1.9.2"
   ],
   "ssdp": [],
-  "version": "0.8.1",
+  "version": "0.8.2",
   "zeroconf": []
 }
