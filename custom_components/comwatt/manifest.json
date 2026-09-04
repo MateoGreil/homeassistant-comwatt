@@ -15,7 +15,7 @@
   "issue_tracker": "https://github.com/MateoGreil/homeassistant-comwatt/issues",
   "requirements": [
     "comwatt-client==0.4.1",
-    "websocket-client==1.9.0"
+    "websocket-client==1.9.2"
   ],
   "ssdp": [],
   "version": "0.8.1",
