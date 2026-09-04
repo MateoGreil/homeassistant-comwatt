@@ -5,6 +5,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import logging
+import math
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
@@ -153,6 +154,20 @@ _RECONCILE_BACKWARD_DRIFT_TOLERANCE_WH = 5.0
 _KWH_TO_WH = 1000.0
 
 
+def _is_finite_number(value: Any) -> bool:
+    """True for usable numeric samples: int/float (not bool) and finite.
+
+    The API intermittently emits non-finite JSON samples (NaN/inf) for
+    partial hours, and persisted NaN totals come back as None; both must be
+    treated as missing data everywhere energy arithmetic happens.
+    """
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
 def _server_bucket_to_wh(server_val: float, live_wh: float) -> float | None:
     """Convert a server QUANTITY/HOUR value to Wh, or None to skip reconciliation.
 
@@ -275,21 +290,31 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 continue
             state = self._site_energy_state.setdefault(site_id, _SiteEnergyState())
-            totals = site_dict.get("totals")
-            state.totals = dict(totals) if isinstance(totals, dict) else {}
-            state.last_bucket_ts = _parse_bucket_ts(site_dict.get("last_bucket_ts"))
             folded_buckets = site_dict.get("folded_buckets")
             state.folded_buckets = {
                 bucket: {
                     metric: value
                     for metric, value in inner.items()
-                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                    if _is_finite_number(value)
                 }
                 for bucket, inner in (
                     folded_buckets.items() if isinstance(folded_buckets, dict) else []
                 )
                 if isinstance(inner, dict)
             }
+            totals = site_dict.get("totals")
+            state.totals = {
+                metric: value
+                for metric, value in (totals.items() if isinstance(totals, dict) else [])
+                if _is_finite_number(value)
+            }
+            ledger_totals: dict[str, float] = {}
+            for inner in state.folded_buckets.values():
+                for metric, value in inner.items():
+                    ledger_totals[metric] = ledger_totals.get(metric, 0.0) + value
+            for metric, total in ledger_totals.items():
+                state.totals.setdefault(metric, total)
+            state.last_bucket_ts = _parse_bucket_ts(site_dict.get("last_bucket_ts"))
         for str_id, state_dict in data.items():
             if str_id == _SITE_ENERGY_STORE_KEY:
                 continue
@@ -308,8 +333,10 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 continue
             state = self._energy_state.setdefault(device_id, _EnergyState())
-            state.live_total_wh = state_dict.get("live_total_wh")
-            state.total_wh = state_dict.get("total_wh", 0.0)
+            raw_live = state_dict.get("live_total_wh")
+            state.live_total_wh = raw_live if _is_finite_number(raw_live) else None
+            raw_total = state_dict.get("total_wh")
+            state.total_wh = raw_total if _is_finite_number(raw_total) else 0.0
             self._publish_device_energy(
                 device_id, state_dict.get("published_total_wh")
             )
@@ -320,7 +347,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             state.live_by_hour = {
                 hour: value
                 for k, value in (state_dict.get("live_by_hour") or {}).items()
-                if (hour := _parse_bucket_ts(k)) is not None
+                if (hour := _parse_bucket_ts(k)) is not None and _is_finite_number(value)
             }
             state.last_bucket_ts = _parse_bucket_ts(state_dict.get("last_bucket_ts"))
 
@@ -513,7 +540,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 metrics[internal_key] = None
                 continue
             value = series[-1]
-            if value is None:
+            if not _is_finite_number(value):
                 metrics[internal_key] = None
                 continue
             metrics[internal_key] = value
@@ -611,9 +638,10 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 value = series[index]
                 if value is None:
                     continue
-                if value < 0:
+                if not _is_finite_number(value) or value < 0:
                     _LOGGER.warning(
-                        "Ignoring negative site bucket %s for metric %s of site %s: %s Wh",
+                        "Ignoring invalid site bucket %s for metric %s of site %s "
+                        "(negative or non-finite value): %r Wh",
                         bucket_dt.isoformat(),
                         metric,
                         site_id,
@@ -636,7 +664,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if not isinstance(series, list) or index >= len(series):
                     continue
                 server_now = series[index]
-                if server_now is None or server_now < 0:
+                if server_now is None or not _is_finite_number(server_now) or server_now < 0:
                     continue
                 delta = server_now - folded_value
                 if delta <= 0:
@@ -829,7 +857,7 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 timestamps = energy_ts.get("timestamps") or []
                 values = energy_ts.get("values") or []
                 for ts, val in zip(timestamps, values):
-                    if val is None:
+                    if val is None or not _is_finite_number(val):
                         continue
                     bucket_dt = _parse_bucket_ts(ts)
                     if bucket_dt is None:

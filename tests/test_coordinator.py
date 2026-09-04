@@ -2233,3 +2233,158 @@ async def test_site_bucket_ledger_persisted_json_shape(
     envelope = hass_storage[_STORE_KEY]
     assert envelope["version"] == 1
     assert envelope["minor_version"] == _STORE_MINOR_VERSION
+
+
+async def test_site_nan_samples_do_not_poison_totals(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """NaN/inf samples from the API (server emits them for partial hours) must
+    never be folded into the totals: every guard must treat them as unusable
+    so the *_total_energy sensors stay finite."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _site_ts_side_effect(
+        {
+            "timestamps": [
+                "2026-08-15T10:00:00.000+0000",
+                "2026-08-15T11:00:00.000+0000",
+                "2026-08-15T12:00:00.000+0000",
+            ],
+            "productions": [float("nan"), float("inf"), 12.5],
+        }
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 12.5
+    state = coord._site_energy_state["site-1"]
+    assert state.totals == {"production": 12.5}
+    assert "invalid site bucket" in caplog.text
+
+
+async def test_site_nan_rate_sample_maps_to_none(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """A NaN instantaneous rate must surface as an unavailable sensor (None),
+    not as a state HA rejects with ValueError (non-finite)."""
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    def _nan_rate_route(site_id: str, measure_kind: str, *rest: object) -> dict[str, Any]:
+        if measure_kind == "QUANTITY":
+            return {"timestamps": []}
+        return {"autoproductionRates": [float("nan")]}
+    mock_comwatt_client.get_site_time_series.side_effect = _nan_rate_route
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = entry.runtime_data
+    assert coord.data["sites"]["site-1"]["auto_production_rate"] is None
+
+
+async def test_persisted_null_totals_are_filtered_and_reseeded(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Regression for the v0.8.2 setup death loop: HA serializes NaN totals as
+    null; restoring them verbatim made the next fold raise
+    TypeError: unsupported operand type(s) for +: 'NoneType' and 'float'.
+    Corrupt totals must be dropped (re-seeded from the server) while intact
+    ones survive."""
+    store = Store(hass, _STORE_VERSION, _STORE_KEY)
+    await store.async_save(
+        {
+            "version": 1,
+            "data": {
+                "__sites__": {
+                    "site-1": {
+                        "totals": {
+                            "production": None,
+                            "consumption": 45.0,
+                            "charge": float("nan"),
+                            "withdrawal": True,
+                        },
+                        "last_bucket_ts": "2026-08-15T10:00:00+00:00",
+                        "folded_buckets": {
+                            "2026-08-15T10:00:00+00:00": {
+                                "production": 20.0,
+                                "charge": 4.0,
+                            }
+                        },
+                    }
+                }
+            },
+        }
+    )
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = []
+    mock_comwatt_client.get_site_time_series.side_effect = _site_ts_side_effect(
+        {"timestamps": ["2026-08-15T11:00:00.000+0000"], "productions": [100.0]}
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    coord = entry.runtime_data
+    state = coord._site_energy_state["site-1"]
+    assert state.totals == {
+        "consumption": 45.0,
+        "charge": 4.0,
+        "production": 120.0,
+    }
+    assert coord.data["sites"]["site-1"]["production_total_energy"] == 120.0
+
+
+async def test_persisted_corrupt_device_numbers_are_filtered_on_restore(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Device restore must validate numbers too: null total_wh (serialized
+    NaN) would crash the next bucket accumulation with NoneType + float, and
+    null/NaN live_by_hour entries would poison reconciliation."""
+    store = Store(hass, _STORE_VERSION, _STORE_KEY)
+    await store.async_save(
+        {
+            "version": 1,
+            "data": {
+                "dev-1": {
+                    "live_total_wh": float("nan"),
+                    "published_total_wh": None,
+                    "total_wh": None,
+                    "live_by_hour": {
+                        "2026-08-15T10:00:00+00:00": None,
+                        "2026-08-15T11:00:00+00:00": 5.0,
+                        "2026-08-15T12:00:00+00:00": 60.0,
+                    },
+                    "last_bucket_ts": "2026-08-15T11:00:00+00:00",
+                }
+            },
+        }
+    )
+    mock_comwatt_client.get_sites.return_value = [SITE]
+    mock_comwatt_client.get_devices.return_value = [DEVICE]
+    mock_comwatt_client.get_device_ts_time_ago.side_effect = _device_ts_side_effect(
+        power=42.0,
+        quantity={
+            "timestamps": ["2026-08-15T12:00:00.000+0000"],
+            "values": [50.0],
+        },
+    )
+
+    entry = _make_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    coord = entry.runtime_data
+    state = coord._energy_state["dev-1"]
+    assert state.total_wh == 50.0
+    assert state.live_total_wh is None
+    assert state.live_by_hour == {
+        datetime(2026, 8, 15, 11, 0, tzinfo=UTC): 5.0,
+        datetime(2026, 8, 15, 12, 0, tzinfo=UTC): 60.0,
+    }
