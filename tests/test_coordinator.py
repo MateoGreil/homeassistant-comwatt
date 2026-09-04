@@ -2089,6 +2089,117 @@ async def test_old_site_state_without_ledger_loads_empty_ledger(
     assert state.folded_buckets == {}
 
 
+async def test_corrupt_site_state_entry_is_skipped_not_fatal(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A `__sites__` entry that is not a dict (e.g. a JSON null, as reported in
+    issue #56) must not crash `async_load_energy_state`: it is skipped with a
+    warning while intact entries still restore."""
+    store = Store(hass, _STORE_VERSION, _STORE_KEY)
+    await store.async_save(
+        {
+            "version": 1,
+            "data": {
+                "__sites__": {
+                    "site-1": None,
+                    "site-2": "corrupt",
+                    "site-3": {
+                        "totals": {"production": 123.0},
+                        "last_bucket_ts": "2026-08-15T10:00:00+00:00",
+                        "folded_buckets": {
+                            "2026-08-15T10:00:00+00:00": {"production": 123.0}
+                        },
+                    },
+                }
+            },
+        }
+    )
+
+    entry = _make_entry(hass)
+    coord = ComwattCoordinator(hass, entry)
+    await coord.async_load_energy_state()
+
+    assert "site-1" not in coord._site_energy_state
+    assert "site-2" not in coord._site_energy_state
+    state = coord._site_energy_state["site-3"]
+    assert state.totals == {"production": 123.0}
+    assert state.last_bucket_ts == datetime(2026, 8, 15, 10, 0, tzinfo=UTC)
+    assert state.folded_buckets == {
+        "2026-08-15T10:00:00+00:00": {"production": 123.0}
+    }
+    assert "Skipping corrupt persisted site energy state for site site-1" in caplog.text
+    assert "Skipping corrupt persisted site energy state for site site-2" in caplog.text
+
+
+async def test_corrupt_device_state_entry_is_skipped_not_fatal(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A device entry that is not a dict must not crash the load; intact
+    entries still restore."""
+    store = Store(hass, _STORE_VERSION, _STORE_KEY)
+    await store.async_save(
+        {
+            "version": 1,
+            "data": {
+                "dev-1": None,
+                "dev-2": {
+                    "live_total_wh": 500.0,
+                    "published_total_wh": 480.0,
+                    "total_wh": 480.0,
+                    "live_by_hour": {},
+                    "last_bucket_ts": None,
+                },
+            },
+        }
+    )
+
+    entry = _make_entry(hass)
+    coord = ComwattCoordinator(hass, entry)
+    await coord.async_load_energy_state()
+
+    assert "dev-1" not in coord._energy_state
+    state = coord._energy_state["dev-2"]
+    assert state.live_total_wh == 500.0
+    assert state.published_total_wh == 500.0
+    assert "Skipping corrupt persisted device energy state for device dev-1" in caplog.text
+
+
+async def test_unparseable_state_timestamps_are_ignored(
+    hass: HomeAssistant, mock_comwatt_client: MagicMock
+) -> None:
+    """Garbage timestamps in the persisted state (site and device
+    `last_bucket_ts`, `live_by_hour` keys) restore as None/omitted instead of
+    raising and failing the whole setup."""
+    store = Store(hass, _STORE_VERSION, _STORE_KEY)
+    await store.async_save(
+        {
+            "version": 1,
+            "data": {
+                "__sites__": {
+                    "site-1": {
+                        "totals": {"production": 10.0},
+                        "last_bucket_ts": "not-a-timestamp",
+                    }
+                },
+                "dev-1": {
+                    "live_total_wh": 5.0,
+                    "total_wh": 5.0,
+                    "live_by_hour": {"garbage-key": 1.0},
+                    "last_bucket_ts": "also-garbage",
+                },
+            },
+        }
+    )
+
+    entry = _make_entry(hass)
+    coord = ComwattCoordinator(hass, entry)
+    await coord.async_load_energy_state()
+
+    assert coord._site_energy_state["site-1"].last_bucket_ts is None
+    assert coord._energy_state["dev-1"].last_bucket_ts is None
+    assert coord._energy_state["dev-1"].live_by_hour == {}
+
+
 async def test_site_bucket_ledger_persisted_json_shape(
     hass: HomeAssistant,
     hass_storage: dict[str, Any],

@@ -250,7 +250,10 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Monotonic clock fields (last_power_w, last_power_t, last_fetched_at,
         _last_site_energy_fetch) are not persisted and stay at their zero/None
         defaults.  Store keys are strings; int site ids are normalized back to
-        int so runtime lookups match.
+        int so runtime lookups match.  Corrupt entries — a site or device
+        mapped to a non-dict value, a non-dict `totals`, or unparseable
+        timestamps — are skipped with a warning instead of failing the whole
+        setup; the affected counters re-seed from the server on the next fetch.
         """
         raw = await self._energy_store.async_load()
         if raw is None:
@@ -262,17 +265,29 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 site_id = int(str_site_id)
             except (ValueError, TypeError):
                 site_id = str_site_id
+            if not isinstance(site_dict, dict):
+                _LOGGER.warning(
+                    "Skipping corrupt persisted site energy state for site %s "
+                    "(expected a dict, got %s); its totals re-seed from the "
+                    "server's official history on the next fetch",
+                    site_id,
+                    type(site_dict).__name__,
+                )
+                continue
             state = self._site_energy_state.setdefault(site_id, _SiteEnergyState())
-            state.totals = dict(site_dict.get("totals") or {})
-            raw_ts = site_dict.get("last_bucket_ts")
-            state.last_bucket_ts = datetime.fromisoformat(raw_ts) if raw_ts else None
+            totals = site_dict.get("totals")
+            state.totals = dict(totals) if isinstance(totals, dict) else {}
+            state.last_bucket_ts = _parse_bucket_ts(site_dict.get("last_bucket_ts"))
+            folded_buckets = site_dict.get("folded_buckets")
             state.folded_buckets = {
                 bucket: {
                     metric: value
                     for metric, value in inner.items()
                     if isinstance(value, (int, float)) and not isinstance(value, bool)
                 }
-                for bucket, inner in (site_dict.get("folded_buckets") or {}).items()
+                for bucket, inner in (
+                    folded_buckets.items() if isinstance(folded_buckets, dict) else []
+                )
                 if isinstance(inner, dict)
             }
         for str_id, state_dict in data.items():
@@ -283,6 +298,15 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 device_id = int(str_id)
             except (ValueError, TypeError):
                 device_id = str_id
+            if not isinstance(state_dict, dict):
+                _LOGGER.warning(
+                    "Skipping corrupt persisted device energy state for device %s "
+                    "(expected a dict, got %s); its live total re-seeds on the "
+                    "next fetch",
+                    device_id,
+                    type(state_dict).__name__,
+                )
+                continue
             state = self._energy_state.setdefault(device_id, _EnergyState())
             state.live_total_wh = state_dict.get("live_total_wh")
             state.total_wh = state_dict.get("total_wh", 0.0)
@@ -294,11 +318,11 @@ class ComwattCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 state.live_total_wh if state.live_total_wh is not None else state.total_wh,
             )
             state.live_by_hour = {
-                datetime.fromisoformat(k): v
-                for k, v in (state_dict.get("live_by_hour") or {}).items()
+                hour: value
+                for k, value in (state_dict.get("live_by_hour") or {}).items()
+                if (hour := _parse_bucket_ts(k)) is not None
             }
-            raw_ts = state_dict.get("last_bucket_ts")
-            state.last_bucket_ts = datetime.fromisoformat(raw_ts) if raw_ts else None
+            state.last_bucket_ts = _parse_bucket_ts(state_dict.get("last_bucket_ts"))
 
     async def async_save_energy_state(self) -> None:
         async with self._energy_lock:
